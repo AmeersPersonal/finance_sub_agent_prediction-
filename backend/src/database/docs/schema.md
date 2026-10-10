@@ -9,7 +9,7 @@ connect them. A table contains records, like rows in a spreadsheet.
 |---|---|
 | `instruments` | The assets we discuss, such as Nvidia stock or an ETF. |
 | `price_bars` | Prices and volume for a time interval; includes provider and price-adjustment basis. |
-| `documents` | An article, report, announcement, or post, with its text, URL, dates, and version hash. |
+| `documents` | An article, report, announcement, or post, with its title, text, URL, dates, version hash, and a title keyword-search index. |
 | `document_instruments` | Connects a document to each asset it mentions. |
 | `document_chunks` | Smaller passages from a document, with a keyword-search index. |
 | `fundamental_snapshots` | Company financial information saved with availability and collection dates. |
@@ -20,7 +20,14 @@ connect them. A table contains records, like rows in a spreadsheet.
 | `user_preferences` | A user's selected strategy, age band, experience, and preferences. No account passwords. |
 
 `schema_migrations` is an additional bookkeeping table recording which schema
-updates have already been applied.
+updates have already been applied, with checksums to detect changed migration files.
+
+Migration `005_document_title_search.sql` adds `documents_title_search_idx`, a
+GIN index on `to_tsvector('english', title)`. It indexes both existing titles
+and future inserts. The existing `document_chunks_search_idx` indexes passage
+bodies. Searching both lets a title keyword find a summary that does not repeat
+that word, without changing immutable document/chunk text or saved evidence.
+Apply pending migrations explicitly to each database; see [setup](../SETUP.md).
 
 ## Example relationships
 

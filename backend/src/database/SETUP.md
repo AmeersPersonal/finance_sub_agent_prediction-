@@ -14,8 +14,12 @@ A separate PostgreSQL 18 instance is configured for this checkout:
 - Python environment: `backend/.venv/`.
 - User service: `hack-knight-postgres.service`, enabled to start at user login.
 
-The core migration has been applied. TimescaleDB is not installed/enabled in
-this instance. Existing system PostgreSQL clusters are separate and unchanged.
+Ordinary migrations through `005_document_title_search.sql` were applied and
+verified on this local application instance on October 10, 2026. The title GIN
+index was valid and ready, and its migration-history checksum matched the file.
+This status does not describe other developers' or cloud databases.
+TimescaleDB is not installed/enabled in this instance. Existing system PostgreSQL
+clusters are separate and unchanged.
 The configured Gemini key has been verified with a real structured-output request and a saved Nvidia forecast.
 
 Manage the running user service from a normal terminal:
@@ -44,8 +48,10 @@ managing its server manually. Cloud setup below is a separate later step.
 
 The backend connects to Tiger Data through PostgreSQL, using a database
 connection URL. A Tiger Cloud management API key is **not** required to insert
-prices or save predictions. No Snowflake or Solana credentials are required by
-this implementation.
+prices or save predictions. Snowflake credentials are needed only for the
+optional vector retrieval (`RAG_BACKEND=snowflake`; see
+[snowflake_rag/spec.md](../snowflake_rag/spec.md)). No Solana credentials are
+required.
 
 ## 1. Create the database service
 
@@ -113,14 +119,30 @@ python -m database.migrate --timescale
 
 Migration requires schema creation permissions; the TimescaleDB option also
 requires the extension to be available. Migration tracking permits reruns
-without rebuilding the database. Do not assume that running a migration
-populates historical articles or prices: it creates the storage structures.
+without rebuilding the database. The runner records each file's name and checksum
+in `schema_migrations`, skips applied files, and rejects edits to applied files.
+It applies all pending ordinary migrations, not just a named migration; inspect
+pending files before running it against an existing database. Prediction startup
+does not run migrations automatically.
+
+`006_snowflake_sync.sql` adds `snowflake_synced_chunks`, which the optional
+Snowflake sync job uses to track what it has indexed. It is an ordinary table
+and needs no Snowflake account to apply.
+
+`005_document_title_search.sql` adds a GIN index on stored document titles. It
+covers existing rows and future inserts without re-ingesting documents or
+rewriting immutable chunks or evidence. Retrieval searches those titles alongside
+passage bodies. This ordinary PostgreSQL update does not require TimescaleDB or
+transfer data to another server. Every separately configured database needs its
+own migration check. Do not assume that running a migration populates historical
+articles or prices: it creates the storage structures.
 
 Run it again after pulling new code: it applies only what's new. Migration 005
-adds shared sign-in tables (used only with `OAUTH_SESSION_STORE=database`);
-006 archives every price-bar correction so past datasets can be rebuilt
-exactly. Nothing in the forecast path needs either, so an older database keeps
-working until you migrate.
+indexes document titles for retrieval; 006 tracks what the optional Snowflake
+index holds; 007 adds shared sign-in tables (used only with
+`OAUTH_SESSION_STORE=database`); 008 archives every price-bar correction so past
+datasets can be rebuilt exactly. Run it before using the new code: title search
+and the Snowflake sync need 005 and 006.
 
 ## 4. Save and evaluate predictions
 
@@ -156,7 +178,7 @@ development cluster above can keep its single application role.
 
 ## Scope and verification
 
-This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG. Signed-in accounts can save preferences (`/me/preferences`). Full publisher article scraping, Reddit ingestion, and semantic vector retrieval are not implemented. See [the API walkthrough](docs/dashboard-api.md).
+This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG, optionally fused with Snowflake vector search. Signed-in accounts can save preferences (`/me/preferences`). Full publisher article scraping and Reddit ingestion are not implemented. See [the API walkthrough](docs/dashboard-api.md).
 
 Connection and migration success must be checked against your actual service
 after private credentials are configured. Offline tests do not establish that

@@ -40,6 +40,9 @@ def repository(monkeypatch):
         def retrieve_passages(self, ticker, query, **kwargs):
             state.retrievals.append((ticker, query, kwargs))
             return state.passages
+        def passages_by_chunk_ids(self, ticker, chunk_ids, **kwargs):
+            state.events.append('reloaded_from_postgres')
+            return [p for p in state.passages if p['chunk_id'] in chunk_ids]
         def save_prediction(self, prediction):
             state.predictions.append(prediction)
             return True
@@ -198,7 +201,8 @@ def test_invalid_request_precedes_external_calls(ticker, horizon, repository, of
 
 def test_retrieval_windows(repository):
     cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
-    service._retrieve('TEST', set(Strategy), cutoff)
+    _, warnings = service._retrieve('TEST', set(Strategy), cutoff)
+    assert warnings == []  # RAG_BACKEND is unset: PostgreSQL only, nothing to warn about
     windows = {(query, args['role']): args['since'] for _, query, args in repository.retrievals}
     day, options, long = (DOC_QUERIES[s] for s in (Strategy.DAY_TRADER, Strategy.INDEX_OPTIONS, Strategy.LONG_TERM))
     assert len(windows) == 9  # every strategy asks for every role
@@ -211,6 +215,76 @@ def test_retrieval_windows(repository):
     assert {windows[(long, role)] for role in service.EVIDENCE_ROLES} == {None}
     assert all(args['cutoff'] == cutoff for _, _, args in repository.retrievals)
     assert all(args['fill'] for _, _, args in repository.retrievals)
+
+
+@pytest.fixture
+def snowflake(monkeypatch):
+    """RAG_BACKEND=snowflake with a fake index; `fail_connect` / `fail_search` simulate outages."""
+    state = SimpleNamespace(searches=[], fail_connect=False, fail_search=False, closed=False)
+    class Index:
+        def __init__(self, connection, model):
+            self.embed_model = model
+        def search(self, ticker, query, **kwargs):
+            if state.fail_search:
+                raise service.SnowflakeError('Snowflake query failed.')
+            state.searches.append((ticker, query, kwargs))
+            return [(12, 0.9), (11, 0.8)]
+    @contextmanager
+    def connect(settings):
+        if state.fail_connect:
+            raise service.SnowflakeError('Snowflake connection failed.')
+        yield object()
+        state.closed = True
+    monkeypatch.setattr(service, 'snowflake_enabled', lambda: True)
+    monkeypatch.setattr(service.SnowflakeSettings, 'from_env',
+                        classmethod(lambda cls: SimpleNamespace(embed_model='test-embed')))
+    monkeypatch.setattr(service, 'snowflake_connect', connect)
+    monkeypatch.setattr(service, 'VectorIndex', Index)
+    return state
+
+
+def _evidence(chunk_id, document_id, relevance=0.0):
+    at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    return dict(document_id=document_id, chunk_id=chunk_id, text=f'passage {chunk_id}', relevance=relevance,
+                source_url=f'https://example.com/{document_id}', title='T', content_kind='excerpt',
+                classification={'role': 'public_opinion'}, published_at=at, first_seen_at=at)
+
+
+def test_snowflake_ranks_then_postgres_reloads_each_role(repository, snowflake):
+    repository.passages = [_evidence(11, 1, 0.3), _evidence(12, 2, 0.2)]
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    passages, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
+    assert warnings == [] and snowflake.closed
+    assert len(snowflake.searches) == 3  # one per evidence role
+    assert snowflake.searches[0][2]['since'] == cutoff - timedelta(days=140)  # company_info window
+    assert repository.events.count('reloaded_from_postgres') == 3
+    chosen = passages[Strategy.DAY_TRADER]
+    assert {p['chunk_id'] for p in chosen} == {11, 12}
+    assert {p['retrieval'] for p in chosen} == {'hybrid'}  # both retrievers found both chunks
+
+
+def test_snowflake_outage_falls_back_to_keyword_search_with_one_warning(repository, snowflake):
+    repository.passages = [_evidence(11, 1, 0.3)]
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    snowflake.fail_connect = True
+    passages, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
+    assert warnings == [service.SNOWFLAKE_FALLBACK]
+    assert [p['chunk_id'] for p in passages[Strategy.DAY_TRADER]] == [11]
+    assert 'retrieval' not in passages[Strategy.DAY_TRADER][0]
+
+    snowflake.fail_connect, snowflake.fail_search = False, True
+    repository.retrievals.clear()
+    _, warnings = service._retrieve('TEST', set(Strategy), cutoff)
+    assert warnings == [service.SNOWFLAKE_FALLBACK]  # first failure switches off Snowflake
+    assert len(repository.retrievals) == 9 and snowflake.closed
+
+
+def test_snowflake_warning_reaches_the_saved_prediction(repository, offline_sources, snowflake, fake_llm):
+    snowflake.fail_search = True
+    p = asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.DAY_TRADER],
+                                             age_bands=['18-24'], llm=fake_llm))
+    assert service.SNOWFLAKE_FALLBACK in p.data_warnings
+    assert repository.predictions == [p]
 
 
 def _passages(role, n, start):

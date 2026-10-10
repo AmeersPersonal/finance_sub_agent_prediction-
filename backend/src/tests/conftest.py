@@ -17,6 +17,12 @@ from audit.media import ItemSummary, NewsDigest
 NY = "America/New_York"
 
 
+@pytest.fixture(autouse=True)
+def _postgres_retrieval_only(monkeypatch):
+    """Tests opt into Snowflake retrieval explicitly, whatever the developer's shell sets."""
+    monkeypatch.delenv("RAG_BACKEND", raising=False)
+
+
 def _daily(seed: int, start_price: float, days: int = 1260) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     index = pd.bdate_range(end="2026-10-09", periods=days, tz=NY)

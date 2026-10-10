@@ -12,4 +12,5 @@ fastapi
 uvicorn
 httpx
 psycopg[binary]
+snowflake-connector-python  # RAG_BACKEND=snowflake (snowflake_rag/), imported lazily
 exchange_calendars

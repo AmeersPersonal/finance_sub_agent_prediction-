@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+from collections import Counter
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -22,8 +24,10 @@ CORE_MIGRATIONS = [
     "001_initial.sql",
     "003_dataset.sql",
     "004_evaluations_immutable.sql",
-    "005_oauth_sessions.sql",
-    "006_price_bar_revisions.sql",
+    "005_document_title_search.sql",
+    "006_snowflake_sync.sql",
+    "007_oauth_sessions.sql",
+    "008_price_bar_revisions.sql",
 ]
 
 
@@ -324,6 +328,50 @@ def test_retrieval_filters_by_evidence_role(db):
     assert [r["document_id"] for r in fallback] == [ids["public_opinion"]]
 
 
+def test_externally_ranked_chunks_obey_the_same_availability_rules(db):
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    kwargs = dict(source_url="https://example.com/a", title="A", document_type="news",
+                  symbols=["TEST"], classification={"role": "public_opinion"})
+    old = repo.store_document(content_text="Old", first_seen_at=cutoff - timedelta(days=2), **kwargs)
+    new = repo.store_document(content_text="New", first_seen_at=cutoff - timedelta(days=1), **kwargs)
+    future = repo.store_document(source_url="https://example.com/future", title="F", content_text="Future",
+                                 document_type="news", symbols=["TEST"],
+                                 first_seen_at=cutoff + timedelta(days=1))
+    long = repo.store_document(source_url="https://example.com/long", title="L", content_text="Long",
+                               document_type="news", symbols=["TEST"],
+                               classification={"role": "public_opinion"},
+                               first_seen_at=cutoff - timedelta(days=1))
+    for document_id, texts in ((old, ["old"]), (new, ["new"]), (future, ["future"]),
+                               (long, ["one", "two", "three"])):
+        repo.store_chunks(document_id, texts)
+    chunk = {row["content_text"]: row["id"] for row in db.execute("SELECT id, content_text FROM document_chunks")}
+    ranked = [chunk[t] for t in ("three", "old", "future", "new", "one", "two")]
+    results = repo.passages_by_chunk_ids("TEST", ranked, cutoff=cutoff)
+    # The superseded version and the future document drop out; order is kept; two per document.
+    assert [r["text"] for r in results] == ["three", "new", "one"]
+    assert repo.passages_by_chunk_ids("TEST", ranked, cutoff=cutoff, role="company_info") == []
+    assert repo.passages_by_chunk_ids("OTHER", ranked, cutoff=cutoff) == []
+    assert repo.passages_by_chunk_ids("TEST", [], cutoff=cutoff) == []
+
+
+def test_snowflake_sync_tracking_is_per_chunk_ticker_and_model(db):
+    repo = DatabaseRepository(db)
+    seen = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    document_id = repo.store_document(source_url="https://example.com/s", title="S", content_text="Body",
+                                      document_type="news", symbols=["TEST", "PEER"], first_seen_at=seen,
+                                      classification={"role": "company_info"})
+    repo.store_chunks(document_id, ["Body"])
+    pending = repo.chunks_to_sync("model-a")
+    assert sorted(r["ticker"] for r in pending) == ["PEER", "TEST"]
+    assert {r["evidence_role"] for r in pending} == {"company_info"}
+    assert pending[0]["first_seen_at"] == seen and pending[0]["content_text"] == "Body"
+    assert repo.mark_chunks_synced(pending[:1], "model-a") == 1
+    assert repo.mark_chunks_synced(pending[:1], "model-a") == 0
+    assert len(repo.chunks_to_sync("model-a")) == 1
+    assert len(repo.chunks_to_sync("model-b")) == 2  # a new embedding model re-syncs everything
+
+
 def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):
     repo = DatabaseRepository(db)
     cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
@@ -339,6 +387,89 @@ def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):
     assert [r["document_id"] for r in filled] == [ids[0], ids[2], ids[1]]
     assert filled[0]["relevance"] > 0 and filled[1]["relevance"] == 0
     assert len(repo.retrieve_passages("TEST", "revenue", cutoff=cutoff, limit=2, fill=True)) == 2
+
+
+def test_retrieval_searches_historical_and_new_rss_titles_without_rewriting_evidence(db):
+    from sources.documents import parse_news_rss
+
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    # Recreate the pre-upgrade schema, then insert the same summary-only chunks
+    # that older RSS ingestion produced. No re-ingestion should be necessary.
+    db.execute("DROP INDEX documents_title_search_idx")
+    db.execute("DELETE FROM schema_migrations WHERE name = %s",
+               ("005_document_title_search.sql",))
+    historical_body = "Management discussed the coming quarter."
+    historical = repo.store_document(
+        source_url="https://example.com/historical", title="Revenue forecast raised",
+        content_text=historical_body, document_type="news", content_kind="excerpt",
+        first_seen_at=cutoff - timedelta(days=2), symbols=["TEST"])
+    repo.store_chunks(historical, [historical_body])
+    original_document = db.execute("SELECT * FROM documents WHERE id = %s", (historical,)).fetchone()
+    original_chunk = db.execute(
+        "SELECT * FROM document_chunks WHERE document_id = %s", (historical,)).fetchone()
+    assert migrate(db) == ["005_document_title_search.sql"]
+    assert migrate(db) == []
+    assert db.execute("SELECT * FROM documents WHERE id = %s", (historical,)).fetchone() == original_document
+    assert db.execute("SELECT * FROM document_chunks WHERE document_id = %s",
+                      (historical,)).fetchone() == original_chunk
+
+    document = parse_news_rss(b"""<rss><channel><item>
+        <title>Revenue outlook improves</title>
+        <link>https://example.com/new-feed-item</link>
+        <description>Executives discussed international demand.</description>
+        </item></channel></rss>""", "TEST", seen_at=cutoff - timedelta(days=1))[0]
+    assert "revenue" not in document.content_text.lower()
+    fresh = repo.store_document(**asdict(document), symbols=["TEST"])
+    repo.store_chunks(fresh, [document.content_text])
+    # A newer unrelated document exposes accidental recency-only fallback.
+    unrelated = repo.store_document(
+        source_url="https://example.com/unrelated", title="Office picnic",
+        content_text="Staff enjoyed the sunshine.", document_type="news",
+        first_seen_at=cutoff - timedelta(hours=1), symbols=["TEST"])
+    repo.store_chunks(unrelated, ["Staff enjoyed the sunshine."])
+
+    results = repo.retrieve_passages("TEST", "revenue", cutoff=cutoff)
+    assert {row["document_id"] for row in results} == {historical, fresh}
+    assert all(row["relevance"] > 0 for row in results)
+    assert {row["document_id"]: row["text"] for row in results} == {
+        historical: historical_body, fresh: document.content_text,
+    }
+    assert next(row for row in results if row["document_id"] == historical)["chunk_id"] == original_chunk["id"]
+
+
+@pytest.mark.parametrize("keyword_hits", [0, 1, 2])
+@pytest.mark.parametrize("limit", [4, 6])
+def test_retrieval_fill_caps_documents_across_keyword_and_fallback_results(db, keyword_hits, limit):
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    ids = []
+    for index in range(3):
+        texts = [f"Office discussion topic {n}" for n in range(4)]
+        if index == 0:
+            texts[:keyword_hits] = [f"Revenue guidance topic {n}" for n in range(keyword_hits)]
+        document_id = repo.store_document(
+            source_url=f"https://example.com/cap/{index}", title=f"Company report {index}",
+            content_text="\n".join(texts), document_type="news", symbols=["TEST"],
+            first_seen_at=cutoff - timedelta(hours=index + 1),
+            classification={"role": "company_info"})
+        repo.store_chunks(document_id, texts)
+        ids.append(document_id)
+
+    results = repo.retrieve_passages("TEST", "revenue", cutoff=cutoff,
+                                    role="company_info", limit=limit, fill=True)
+    assert len(results) == limit
+    assert len({row["chunk_id"] for row in results}) == limit
+    # The newest document has four chunks, but keyword and fallback selection
+    # together may consume only two. Other documents must fill the vacant slots.
+    assert Counter(row["document_id"] for row in results) == Counter({
+        document_id: 2 for document_id in ids[:limit // 2]
+    })
+    assert all(row["relevance"] > 0 for row in results[:keyword_hits])
+    assert all(row["relevance"] == 0 for row in results[keyword_hits:])
+    assert [row["document_id"] for row in results] == [
+        document_id for document_id in ids[:limit // 2] for _ in range(2)
+    ]
 
 
 def test_multi_mode_forecast_saves_one_row_per_persona_and_mode(db, snapshot, fake_llm):

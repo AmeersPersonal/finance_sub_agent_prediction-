@@ -34,7 +34,7 @@ def load_daily_prices_as_known(repository, ticker: str, *, as_of: datetime,
                                start_at: datetime | None = None,
                                end_at: datetime | None = None) -> pd.DataFrame:
     """Daily prices exactly as the database knew them at `as_of`, corrections made
-    since undone from the revision archive (migration 006). `load_daily_prices`
+    since undone from the revision archive (migration 008). `load_daily_prices`
     instead reads the latest corrected values fetched by its cutoff."""
     for timestamp in (as_of, start_at, end_at):
         if timestamp is not None and timestamp.tzinfo is None:

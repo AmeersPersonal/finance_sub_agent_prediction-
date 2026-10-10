@@ -11,7 +11,7 @@ nothing to leak or commit.
 `MemoryStore` (the default) is per process: restarting signs everyone out and
 a second worker wouldn't see the first one's sign-ins. With more than one
 worker, set `OAUTH_SESSION_STORE=database` to use `DatabaseStore`, which shares
-the state through PostgreSQL tables (migration 005) and keeps only hashes of
+the state through PostgreSQL tables (migration 007) and keeps only hashes of
 the state values and session ids.
 """
 
@@ -146,7 +146,7 @@ class DatabaseStore:
 
 
 def store_from_env() -> SessionStore:
-    """`OAUTH_SESSION_STORE`: `memory` (default) or `database` (needs DATABASE_URL and migration 005)."""
+    """`OAUTH_SESSION_STORE`: `memory` (default) or `database` (needs DATABASE_URL and migration 007)."""
     kind = (os.getenv("OAUTH_SESSION_STORE") or "memory").strip().lower()
     if kind == "memory":
         return MemoryStore()

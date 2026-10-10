@@ -103,6 +103,7 @@ backend/
     │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
     │   └── store.py          # save/load under data/models/ with a sidecar JSON
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
+    ├── snowflake_rag/        # optional Snowflake vector index over stored chunks (RAG_BACKEND=snowflake)
     ├── database/             # migrations, repository, orchestration, backup.py, roles.sql, setup/docs
     ├── oauth/                # Google OIDC sign-in (code + PKCE); sessions in memory or PostgreSQL
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
@@ -150,7 +151,8 @@ optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
 `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` plus the optional `OAUTH_*` settings in
 `.env.example`. Forecast requests need sign-in unless `API_REQUIRE_SIGN_IN=false`;
 `API_PREDICTIONS_PER_HOUR` and `API_SCORE_CACHE_SECONDS` tune the API.
-Optional: `ALT_LLM_BASE_URL` / `ALT_LLM_MODEL` / `ALT_LLM_API_KEY` (a second,
+Optional: `RAG_BACKEND=snowflake` with the `SNOWFLAKE_*` key-pair settings,
+`ALT_LLM_BASE_URL` / `ALT_LLM_MODEL` / `ALT_LLM_API_KEY` (a second,
 OpenAI-compatible model provider), `LIVE_FEED=finnhub` with `FINNHUB_API_KEY`,
 `OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose.
 
@@ -266,7 +268,10 @@ real application/contact identifier. Reddit was removed: its Responsible Builder
 Policy requires approval first and forbids sharing its data. Every document has a role
 (`company_info`, `public_opinion`, `product_event`) shown in the prompt, and
 retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
-retrieval and frontend wiring are not implemented. Retention, backups, source
+retrieval is optional: `RAG_BACKEND=snowflake` fuses Snowflake Cortex rankings
+with the keyword search (`snowflake_rag/spec.md`), and PostgreSQL reloads every
+ranked chunk under the same point-in-time rules. Frontend wiring is not
+implemented. Retention, backups, source
 use and database roles: `database/docs/retention-and-access.md`. Record prompt changes in
 `agents.PROMPT_CHANGELOG` (and `ai/spec.md`).
 

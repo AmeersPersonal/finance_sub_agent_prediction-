@@ -28,8 +28,9 @@ different operation from transferring local data to a cloud server.
 ## Two paths
 
 **Start fresh:** if local rows are disposable development data, point migration
-commands at the new service and run the core migration. Then fetch new data and
-make new forecasts there. Old local records stay local.
+commands at the new service and run all ordinary migrations, including `005`
+for the title search index. Then fetch new data and make new forecasts there.
+Old local records stay local.
 
 **Keep local history:** pause writes, back up with PostgreSQL's `pg_dump`, and
 restore the application schema/data using `pg_restore` into a suitable empty
@@ -40,7 +41,9 @@ credentials. Keep private backups in gitignored storage.
 Choose one schema-creation approach: do not restore a full schema on top of
 tables already created by the migration runner. Existing cloud application data
 requires a separate merge plan. After restoring migration history, the runner
-checks it and applies only updates that have not been applied.
+checks it and applies only updates that have not been applied. Verify the target's
+own migration history and valid `documents_title_search_idx`; a local `005`
+application does not establish that a cloud copy has the index.
 
 The small-prototype approach above uses a deliberate write pause. Tiger Data
 documents PostgreSQL dump/restore as a migration option in its

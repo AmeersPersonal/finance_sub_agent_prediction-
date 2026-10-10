@@ -15,6 +15,7 @@ team decides differently.
 | Prices | `price_bars`, `price_bar_revisions` | Forever | A few MB per ticker per year. Revisions make any past dataset rebuildable (`model_data.load_daily_prices_as_known`). |
 | Company data | `fundamental_snapshots` | Forever | Point-in-time; Yahoo can't serve it historically. |
 | Source documents | `documents`, `document_chunks`, `document_instruments` | Forever, within each source's terms below | Forecasts cite them by id. |
+| Snowflake index (optional) | Snowflake `RAG_CHUNKS`; `snowflake_synced_chunks` here | As long as `RAG_BACKEND=snowflake` is used | A derived copy of document chunks with embeddings, for ranking only. PostgreSQL stays the record: drop `RAG_CHUNKS` and delete the tracking rows to remove it, and `python -m snowflake_rag sync` rebuilds it. |
 | Sign-in state | `oauth_pending_logins`, `oauth_sessions` | 10 minutes / 8 hours, deleted after expiry | Hashes only; swept on the next write. |
 | Account preferences | `user_preferences` | Until the user deletes them (`DELETE /me/preferences`) or asks us to | Personal data: keep only while the user wants it. |
 | JSONL log (CLI) | `backend/data/predictions.jsonl` | Forever; rotated by year past 100 MB | Same reason as forecasts. |
@@ -60,6 +61,10 @@ before any public or commercial use.
 | Hacker News | Top comments (400 characters), thread link; no author names | Evidence passages, cited by thread | Treating it as a sample of investor opinion; storing authors |
 | Reddit | Nothing | None | Collecting it at all (its Responsible Builder Policy needs approval and forbids sharing data with a model) |
 | yfinance (prices, statements, ownership) | Numbers | Computing metrics for personas | Redistributing raw data as a data product |
+
+Copying chunks to the optional Snowflake index is internal processing under the
+same rules: it stores nothing a source's row above forbids storing, and its
+contents never leave the team's Snowflake account.
 
 Document text from `backend/src/ai/docs/` is private and never stored in the
 database or committed (`CLAUDE.md`).

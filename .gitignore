@@ -15,6 +15,7 @@ token.json
 token.pickle
 *.pem
 *.key
+*.p8
 *.p12
 *.pfx
 

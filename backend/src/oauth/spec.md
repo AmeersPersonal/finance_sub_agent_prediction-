@@ -8,7 +8,7 @@
 - [x] Define where tokens are stored: see Token storage.
 - [x] Add a `state` check for the callback route (CSRF): state cookie + server-side single-use state, plus PKCE.
 - [x] Tests with a fake provider; no network (`tests/test_oauth.py`).
-- [x] Shared store for several workers: `DatabaseStore` keeps pending logins and sessions in PostgreSQL (migration 005), storing only SHA-256 hashes of the state values and session ids. `OAUTH_SESSION_STORE=database` selects it; memory stays the default. PostgreSQL rather than Redis: the API already needs it, so no new service or dependency.
+- [x] Shared store for several workers: `DatabaseStore` keeps pending logins and sessions in PostgreSQL (migration 007), storing only SHA-256 hashes of the state values and session ids. `OAUTH_SESSION_STORE=database` selects it; memory stays the default. PostgreSQL rather than Redis: the API already needs it, so no new service or dependency.
 - [x] ID tokens: the API calls userinfo and never trusts the ID token; that's now a rule below, not a task.
 - [x] Deleted the `.gitkeep`.
 
