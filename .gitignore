@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# Secrets: never commit these. Use .env.example (names only, no values) as the
+# shareable template.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.env
+!.env.example
+
+# OAuth credentials and tokens
+backend/src/oauth/*.json
+client_secret*.json
+credentials.json
+token.json
+token.pickle
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ---------------------------------------------------------------------------
+# Private documents: RAG source docs, statements, datasets.
+# The folder is kept via .gitkeep; its contents are not tracked.
+# ---------------------------------------------------------------------------
+backend/src/ai/docs/*
+!backend/src/ai/docs/.gitkeep
+
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.csv
+*.pptx
+
+# Indexes built from those documents
+chroma/
+chroma_db/
+vectorstore/
+vector_store/
+faiss_index/
+*.faiss
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Logs, editor, OS
+# ---------------------------------------------------------------------------
+*.log
+.vscode/
+.idea/
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+desktop.ini
