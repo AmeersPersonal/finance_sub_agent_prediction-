@@ -54,7 +54,7 @@ backend/
 └── src/
     ├── main.py               # CLI: predict + log, --score, --backtest; --weights, --live, --audit
     ├── requirements.txt      # direct dependencies, pinned
-    ├── requirements.lock     # every dependency, pinned with hashes (pip-compile)
+    ├── requirements.lock     # every dependency, pinned with hashes (uv pip compile --universal)
     ├── api/
     │   └── main.py           # the one FastAPI app: database-backed forecasts and reads, /score, OAuth
     ├── ai/

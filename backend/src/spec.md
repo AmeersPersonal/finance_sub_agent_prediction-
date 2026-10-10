@@ -31,7 +31,7 @@ the same pipeline (the API always through `database.service`). Everything else i
 | `database/` | PostgreSQL migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
 | `tests/` | Offline test suite (`tests/spec.md`) |
 | `requirements.txt` | Direct dependencies, pinned (`==`) |
-| `requirements.lock` | Every transitive dependency, pinned with hashes (`pip-compile` output) |
+| `requirements.lock` | Every transitive dependency for every platform, pinned with hashes (`uv pip compile --universal` output) |
 | `pytest.ini` | `pythonpath = .`, `testpaths = tests` |
 | `.coveragerc` | Coverage source and report settings for `pytest --cov` |
 | `CLAUDE.md` | Rules and conventions for AI coding agents |
