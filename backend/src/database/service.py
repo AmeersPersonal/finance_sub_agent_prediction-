@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -25,6 +26,11 @@ from audit.risk import learning_context
 from database.connection import connect
 from database.repository import DatabaseRepository
 from database.datasets import DatasetStore
+from snowflake_rag.connection import SnowflakeError, SnowflakeSettings
+from snowflake_rag.connection import connect as snowflake_connect
+from snowflake_rag.connection import enabled as snowflake_enabled
+from snowflake_rag.index import VectorIndex
+from snowflake_rag.retrieval import hybrid_passages
 from sources import fetch_documents
 
 
@@ -160,9 +166,29 @@ def mix_roles(candidates: dict[str, list[dict]], limit: int) -> list[dict]:
     return mixed
 
 
+SNOWFLAKE_FALLBACK = "Snowflake RAG unavailable; evidence came from PostgreSQL keyword search."
+
+
+@contextmanager
+def _vector_index(warnings: list[str]):
+    """The Snowflake index when RAG_BACKEND=snowflake and it connects, else None."""
+    if not snowflake_enabled():
+        yield None
+        return
+    with ExitStack() as stack:
+        try:
+            settings = SnowflakeSettings.from_env()
+            connection = stack.enter_context(snowflake_connect(settings))
+        except SnowflakeError:
+            warnings.append(SNOWFLAKE_FALLBACK)
+            connection = None
+        yield None if connection is None else VectorIndex(connection, settings.embed_model)
+
+
 def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
-    passages = {}
-    with connect() as connection:
+    """Per-strategy passages and any retrieval warnings."""
+    passages, warnings = {}, []
+    with connect() as connection, _vector_index(warnings) as index:
         repo = DatabaseRepository(connection)
         for strategy in strategies:
             candidates = {}
@@ -170,13 +196,21 @@ def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
                 days = RECENCY_DAYS[strategy]
                 if role == "company_info" and days is not None:
                     days = max(days, COMPANY_INFO_DAYS)
+                options = dict(cutoff=cutoff, since=cutoff - timedelta(days=days) if days else None,
+                               role=role)
+                if index is not None:
+                    try:
+                        candidates[role] = hybrid_passages(repo, index, ticker, DOC_QUERIES[strategy],
+                                                           limit=PASSAGES_PER_STRATEGY, **options)
+                        continue
+                    except SnowflakeError:
+                        warnings.append(SNOWFLAKE_FALLBACK)
+                        index = None
                 candidates[role] = repo.retrieve_passages(
-                    ticker, DOC_QUERIES[strategy], cutoff=cutoff,
-                    since=cutoff - timedelta(days=days) if days else None,
-                    limit=PASSAGES_PER_STRATEGY, role=role, fill=True,
+                    ticker, DOC_QUERIES[strategy], limit=PASSAGES_PER_STRATEGY, fill=True, **options,
                 )
             passages[strategy] = mix_roles(candidates, PASSAGES_PER_STRATEGY)
-    return passages
+    return passages, warnings
 
 
 PERSONA_TIMEOUT_SECONDS = 150  # per reasoning mode: each mode is another full panel of calls
@@ -210,7 +244,8 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
     snapshot, ingest = await _prepare(ticker)
     cutoff = datetime.now(timezone.utc)
     regression_daily = await asyncio.to_thread(_model_prices, ticker, snapshot, cutoff)
-    passages = await asyncio.to_thread(_retrieve, ticker, {p.strategy for p in personas}, cutoff)
+    passages, retrieval_warnings = await asyncio.to_thread(
+        _retrieve, ticker, {p.strategy for p in personas}, cutoff)
     snippets = {
         strategy: [Snippet(
             source=p["source_url"], text=p["text"], document_id=p["document_id"],
@@ -258,6 +293,7 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
     prediction.input_snapshot["evidence_cutoff_at"] = cutoff.isoformat()
     prediction.input_snapshot["regression_dataset"] = dict(regression_daily.attrs["regression_dataset"])
     prediction.data_warnings.extend(ingest["warnings"])
+    prediction.data_warnings.extend(retrieval_warnings)
     if not prediction.sources:
         prediction.data_warnings.append("No online documents retrieved; forecast uses available numerical/headline data.")
     await asyncio.to_thread(_save_with_evidence, prediction, passages, cutoff)

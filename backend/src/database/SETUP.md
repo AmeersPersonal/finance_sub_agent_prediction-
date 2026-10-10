@@ -48,8 +48,10 @@ managing its server manually. Cloud setup below is a separate later step.
 
 The backend connects to Tiger Data through PostgreSQL, using a database
 connection URL. A Tiger Cloud management API key is **not** required to insert
-prices or save predictions. No Snowflake or Solana credentials are required by
-this implementation.
+prices or save predictions. Snowflake credentials are needed only for the
+optional vector retrieval (`RAG_BACKEND=snowflake`; see
+[snowflake_rag/spec.md](../snowflake_rag/spec.md)). No Solana credentials are
+required.
 
 ## 1. Create the database service
 
@@ -123,6 +125,10 @@ It applies all pending ordinary migrations, not just a named migration; inspect
 pending files before running it against an existing database. Prediction startup
 does not run migrations automatically.
 
+`006_snowflake_sync.sql` adds `snowflake_synced_chunks`, which the optional
+Snowflake sync job uses to track what it has indexed. It is an ordinary table
+and needs no Snowflake account to apply.
+
 `005_document_title_search.sql` adds a GIN index on stored document titles. It
 covers existing rows and future inserts without re-ingesting documents or
 rewriting immutable chunks or evidence. Retrieval searches those titles alongside
@@ -151,7 +157,7 @@ does not change forecasting or calibrate agent confidence.
 
 ## Scope and verification
 
-This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG. Full publisher article scraping, Reddit ingestion, user accounts, and semantic vector retrieval are not implemented. See [the API walkthrough](docs/dashboard-api.md).
+This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG, optionally fused with Snowflake vector search. Full publisher article scraping, Reddit ingestion, and user accounts are not implemented. See [the API walkthrough](docs/dashboard-api.md).
 
 Connection and migration success must be checked against your actual service
 after private credentials are configured. Offline tests do not establish that

@@ -28,7 +28,8 @@ the same pipeline (the API always through `database.service`). Everything else i
 | `ml/` | Learned models (price classifier, persona stacker, calibration) behind walk-forward gates; `python -m ml` (`ml/spec.md`) |
 | `sources/` | Online evidence: Yahoo/Google News RSS, Hacker News, optional SEC filings and press releases (`sources/spec.md`) |
 | `oauth/` | Google OIDC sign-in routes and in-memory sessions (`oauth/spec.md`) |
-| `database/` | PostgreSQL migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
+| `database/` | PostgreSQL (Tiger Data) migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
+| `snowflake_rag/` | Optional Snowflake vector index over stored chunks, fused with keyword retrieval; `python -m snowflake_rag` (`snowflake_rag/spec.md`) |
 | `tests/` | Offline test suite (`tests/spec.md`) |
 | `requirements.txt` | Direct dependencies, pinned (`==`) |
 | `requirements.lock` | Every transitive dependency for every platform, pinned with hashes (`uv pip compile --universal` output) |
@@ -59,6 +60,7 @@ main.py --database / api.main
      -> database.repository               store bars, snapshots, documents/chunks
      -> database.datasets                 freeze the snapshot's daily rows for regression
      -> dated keyword retrieval           choose per-strategy evidence, mixed by role
+        (+ snowflake_rag)                 optional: vector ranking fused in, reloaded from PostgreSQL
      -> ai.main.predict                   personas + separate regression
      -> audit                             source digest and learning context
      -> database.repository               save forecast, outputs, and evidence
@@ -70,7 +72,9 @@ fetches actual closes, and saves outcomes without rerunning the LLM.
 
 ## Dependency direction
 
-`main.py, api/ -> database.service -> ai/sources/audit/repository`,
+`main.py, api/ -> database.service -> ai/sources/audit/repository/snowflake_rag`,
+`snowflake_rag/__main__ -> database` (the sync job only; `snowflake_rag` modules
+otherwise take a repository object and import nothing from `database/`),
 `main.py, api/ -> audit -> ai -> finance`, `ml -> ai, finance`, and
 `api/ -> oauth`. `finance/` never imports `ai/`; `ai/` never imports `audit/`
 or `ml/`; nothing imports `ml/` until a model passes its gate; `oauth/`

@@ -25,6 +25,7 @@ CORE_MIGRATIONS = [
     "003_dataset.sql",
     "004_evaluations_immutable.sql",
     "005_document_title_search.sql",
+    "006_snowflake_sync.sql",
 ]
 
 
@@ -323,6 +324,50 @@ def test_retrieval_filters_by_evidence_role(db):
     # The recency fallback respects the role too.
     fallback = repo.retrieve_passages("TEST", "volatility", cutoff=cutoff, role="public_opinion")
     assert [r["document_id"] for r in fallback] == [ids["public_opinion"]]
+
+
+def test_externally_ranked_chunks_obey_the_same_availability_rules(db):
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    kwargs = dict(source_url="https://example.com/a", title="A", document_type="news",
+                  symbols=["TEST"], classification={"role": "public_opinion"})
+    old = repo.store_document(content_text="Old", first_seen_at=cutoff - timedelta(days=2), **kwargs)
+    new = repo.store_document(content_text="New", first_seen_at=cutoff - timedelta(days=1), **kwargs)
+    future = repo.store_document(source_url="https://example.com/future", title="F", content_text="Future",
+                                 document_type="news", symbols=["TEST"],
+                                 first_seen_at=cutoff + timedelta(days=1))
+    long = repo.store_document(source_url="https://example.com/long", title="L", content_text="Long",
+                               document_type="news", symbols=["TEST"],
+                               classification={"role": "public_opinion"},
+                               first_seen_at=cutoff - timedelta(days=1))
+    for document_id, texts in ((old, ["old"]), (new, ["new"]), (future, ["future"]),
+                               (long, ["one", "two", "three"])):
+        repo.store_chunks(document_id, texts)
+    chunk = {row["content_text"]: row["id"] for row in db.execute("SELECT id, content_text FROM document_chunks")}
+    ranked = [chunk[t] for t in ("three", "old", "future", "new", "one", "two")]
+    results = repo.passages_by_chunk_ids("TEST", ranked, cutoff=cutoff)
+    # The superseded version and the future document drop out; order is kept; two per document.
+    assert [r["text"] for r in results] == ["three", "new", "one"]
+    assert repo.passages_by_chunk_ids("TEST", ranked, cutoff=cutoff, role="company_info") == []
+    assert repo.passages_by_chunk_ids("OTHER", ranked, cutoff=cutoff) == []
+    assert repo.passages_by_chunk_ids("TEST", [], cutoff=cutoff) == []
+
+
+def test_snowflake_sync_tracking_is_per_chunk_ticker_and_model(db):
+    repo = DatabaseRepository(db)
+    seen = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    document_id = repo.store_document(source_url="https://example.com/s", title="S", content_text="Body",
+                                      document_type="news", symbols=["TEST", "PEER"], first_seen_at=seen,
+                                      classification={"role": "company_info"})
+    repo.store_chunks(document_id, ["Body"])
+    pending = repo.chunks_to_sync("model-a")
+    assert sorted(r["ticker"] for r in pending) == ["PEER", "TEST"]
+    assert {r["evidence_role"] for r in pending} == {"company_info"}
+    assert pending[0]["first_seen_at"] == seen and pending[0]["content_text"] == "Body"
+    assert repo.mark_chunks_synced(pending[:1], "model-a") == 1
+    assert repo.mark_chunks_synced(pending[:1], "model-a") == 0
+    assert len(repo.chunks_to_sync("model-a")) == 1
+    assert len(repo.chunks_to_sync("model-b")) == 2  # a new embedding model re-syncs everything
 
 
 def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):

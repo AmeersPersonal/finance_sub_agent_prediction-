@@ -8,6 +8,7 @@
 - [ ] Define retention and backup policies for database records (PostgreSQL); the JSONL decision above does not cover them.
 - [x] Add a lock file: `src/requirements.lock` is `uv pip compile --universal --generate-hashes` output (see Design notes).
 - [x] Regenerate `src/requirements.lock` after the database merge (2026-10-10): added `psycopg[binary]`, `exchange_calendars` and their dependencies; no existing pin changed. Now a universal lock (Windows, Linux, macOS; Python 3.12+), replacing the Windows-only pip-compile one.
+- [x] Regenerate `src/requirements.lock` for the optional Snowflake RAG (2026-10-10): added `snowflake-connector-python` and its dependencies (`boto3`, `pyjwt`, `pyopenssl`, ...). One existing pin moved: `filelock` 4.1.0 -> 3.32.7, because the connector requires `filelock<4`; `torch` accepts either.
 - [x] Decide on a home for non-Python tooling. Decision: a `Dockerfile` and `.dockerignore` go in `backend/` (build context `backend/`; `.dockerignore` must exclude `.env`, `.venv/` and `data/`); CI goes in the repo-root `.github/workflows/` (GitHub reads it only there) and runs from `backend/src/`. Nothing non-Python goes in `src/`.
 - [ ] If `predictions.jsonl` passes ~100 MB, rotate it by year (`predictions-2026.jsonl`) and make `load_log` read every file; never delete scored history.
 - [ ] Package deployment/startup for teammates and future hosting.

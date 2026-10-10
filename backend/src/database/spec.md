@@ -6,8 +6,10 @@
   offline verification does not validate cloud credentials.
 - [x] Collect linked RSS excerpts and optional SEC primary filing text through `sources/`.
 - [x] Retrieve dated passages and save exactly what was provided, with cited-by metadata.
-- [ ] Add an embedding provider and vector index only after measuring retrieval
-  quality against the initial PostgreSQL full-text index.
+- [x] Add an embedding provider and vector index: optional Snowflake Cortex
+  embeddings in `snowflake_rag/`, fused with this full-text index (`RAG_BACKEND=snowflake`).
+- [ ] Measure retrieval quality with and without Snowflake before relying on it
+  (see `snowflake_rag/spec.md`).
 - [x] Add local dashboard HTTP routes in `api/`.
 - [ ] Add authenticated account integration before exposing preference data.
 - [x] Refresh corrected price bars from equally/newer fetches; skip unchanged or older data.
@@ -20,11 +22,13 @@
 One PostgreSQL database stores market data, source documents, immutable forecast
 inputs, persona and baseline outputs, and later outcomes. It works on ordinary
 PostgreSQL; Tiger Data adds an optional TimescaleDB hypertable for price bars.
-No separate NoSQL store, Snowflake service, or blockchain is required.
+No separate NoSQL store or blockchain is required. Snowflake is optional: with
+`RAG_BACKEND=snowflake` it ranks chunk IDs by vector similarity
+(`snowflake_rag/`), but this database stays the system of record.
 
 Database-backed forecasts persist market data, source documents, retrieved
 evidence, predictions, and scores. The API exposes these records to a future
-frontend. Semantic vector retrieval and account integration remain separate work.
+frontend. Account integration remains separate work.
 
 ## Files
 
@@ -41,6 +45,7 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `migrations/003_dataset.sql` | Immutable per-forecast regression datasets (`model_datasets`) |
 | `migrations/004_evaluations_immutable.sql` | Append-only trigger for `evaluations` |
 | `migrations/005_document_title_search.sql` | English full-text GIN index on stored titles, covering existing and future documents without rewriting evidence |
+| `migrations/006_snowflake_sync.sql` | `snowflake_synced_chunks`: which chunk/instrument pairs the Snowflake index holds, per embedding model |
 | `SETUP.md` | Cloud connection, private environment configuration, and CLI commands |
 | `local_postgres.sh` | Initialize and manage a separate persistent local PostgreSQL cluster in gitignored `backend/data/` |
 | `docs/README.md` | Short beginner guides to the schema, data flow, and future Tiger Cloud migration |
@@ -60,6 +65,7 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `prediction_evidence` | Exact supplied excerpts, source/chunk links, strategy, and cited-by metadata |
 | `evaluations` | Later observed price/return/direction, data basis, and evaluation payload |
 | `user_preferences` | External account reference, adult age band, strategy, experience, and optional preferences; no credentials |
+| `snowflake_synced_chunks` | Chunk, instrument and embedding model already copied to the optional Snowflake index |
 
 The migration runner records names and checksums in `schema_migrations`, skips
 applied files, and rejects changes to their contents. Run it explicitly for each
@@ -141,6 +147,13 @@ matches stay first. The two-passages-per-document cap applies across the
 combined keyword and fallback results: fallback excludes selected chunks and
 subtracts each document's selected count from its remaining allowance before
 applying the limit, so other documents can fill available slots.
+
+With `RAG_BACKEND=snowflake`, each strategy/role list instead fuses Snowflake's
+vector ranking with these keyword matches (`snowflake_rag.retrieval`). Snowflake
+hits are reloaded through `passages_by_chunk_ids`, which applies the same
+availability rules and two-per-document cap, and any Snowflake failure falls
+back to keyword retrieval with a data warning. Evidence metadata records the
+retriever (`retrieval`).
 
 Chunks are 1,600 characters with overlap; passage start offsets are capped at
 560,000 characters per document while source text remains stored. These

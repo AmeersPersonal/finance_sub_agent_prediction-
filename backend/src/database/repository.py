@@ -316,6 +316,22 @@ class DatabaseRepository:
                     (document_id, index, text),
                 )
 
+    # Latest version per source URL that the instrument's forecast could have seen.
+    # Parameters: symbol, cutoff, cutoff, since, since, role, role.
+    _AVAILABLE = """WITH available AS (
+            SELECT DISTINCT ON (d.source_url) d.*
+            FROM documents d JOIN document_instruments di ON di.document_id = d.id
+            JOIN instruments i ON i.id = di.instrument_id
+            WHERE i.symbol = %s AND d.first_seen_at <= %s
+            AND (d.published_at IS NULL OR d.published_at <= %s)
+            AND (%s::timestamptz IS NULL OR COALESCE(d.published_at, d.first_seen_at) >= %s)
+            AND (%s::text IS NULL OR COALESCE(d.classification->>'role', 'other') = %s)
+            ORDER BY d.source_url, d.first_seen_at DESC, d.id DESC
+        )"""
+    _PASSAGE_FIELDS = """d.id AS document_id, c.id AS chunk_id, d.source_url, d.title,
+            d.content_kind, d.document_type, d.classification,
+            d.published_at, d.first_seen_at, left(c.content_text, 1600) AS text"""
+
     def retrieve_passages(self, ticker: str, query: str, *, cutoff: datetime,
                           since: datetime | None = None, limit: int = 6,
                           role: str | None = None, fill: bool = False) -> list[dict]:
@@ -330,19 +346,7 @@ class DatabaseRepository:
         # DOC_QUERIES are keyword bags. Remove query operators before binding OR.
         terms = re.findall(r"[^\W_]+", query, flags=re.UNICODE)
         keyword_query = " OR ".join('"' + term + '"' for term in terms)
-        available = """WITH available AS (
-            SELECT DISTINCT ON (d.source_url) d.*
-            FROM documents d JOIN document_instruments di ON di.document_id = d.id
-            JOIN instruments i ON i.id = di.instrument_id
-            WHERE i.symbol = %s AND d.first_seen_at <= %s
-            AND (d.published_at IS NULL OR d.published_at <= %s)
-            AND (%s::timestamptz IS NULL OR COALESCE(d.published_at, d.first_seen_at) >= %s)
-            AND (%s::text IS NULL OR COALESCE(d.classification->>'role', 'other') = %s)
-            ORDER BY d.source_url, d.first_seen_at DESC, d.id DESC
-        )"""
-        fields = """d.id AS document_id, c.id AS chunk_id, d.source_url, d.title,
-            d.content_kind, d.document_type, d.classification,
-            d.published_at, d.first_seen_at, left(c.content_text, 1600) AS text"""
+        available, fields = self._AVAILABLE, self._PASSAGE_FIELDS
         filters = (ticker.strip().upper(), cutoff, cutoff, since, since, role, role)
         relevance = """(ts_rank_cd(to_tsvector('english', c.content_text), search.query)
             + ts_rank_cd(to_tsvector('english', d.title), search.query))"""
@@ -383,6 +387,63 @@ class DatabaseRepository:
                  [m["chunk_id"] for m in matches], limit - len(matches)),
             ).fetchall()
 
+    def passages_by_chunk_ids(self, ticker: str, chunk_ids: list[int], *, cutoff: datetime,
+                              since: datetime | None = None, role: str | None = None) -> list[dict]:
+        """Reload externally ranked chunks under the same availability rules as
+        `retrieve_passages`, in the given order, at most two per document.
+
+        A chunk from a superseded source version, a later first-seen date, outside
+        the lookback window or with another role is dropped, not trusted.
+        """
+        if not chunk_ids:
+            return []
+        filters = (ticker.strip().upper(), cutoff, cutoff, since, since, role, role)
+        with self._transaction():
+            rows = self.connection.execute(
+                self._AVAILABLE + " SELECT " + self._PASSAGE_FIELDS + """
+                FROM available d JOIN document_chunks c ON c.document_id = d.id
+                WHERE c.id = ANY(%s)""",
+                (*filters, list(chunk_ids)),
+            ).fetchall()
+        by_id = {row["chunk_id"]: row for row in rows}
+        kept, per_document = [], {}
+        for chunk_id in dict.fromkeys(chunk_ids):
+            row = by_id.get(chunk_id)
+            if row is None or per_document.get(row["document_id"], 0) >= 2:
+                continue
+            per_document[row["document_id"]] = per_document.get(row["document_id"], 0) + 1
+            kept.append(row)
+        return kept
+
+    def chunks_to_sync(self, embedding_model: str, *, limit: int = 500) -> list[dict]:
+        """Chunk/ticker pairs not yet copied to the Snowflake index for this model."""
+        with self._transaction():
+            return self.connection.execute(
+                """SELECT c.id AS chunk_id, d.id AS document_id, i.id AS instrument_id,
+                    i.symbol AS ticker, COALESCE(d.classification->>'role', 'other') AS evidence_role,
+                    d.published_at, d.first_seen_at, d.title, c.content_text
+                FROM document_chunks c JOIN documents d ON d.id = c.document_id
+                JOIN document_instruments di ON di.document_id = d.id
+                JOIN instruments i ON i.id = di.instrument_id
+                LEFT JOIN snowflake_synced_chunks s ON s.chunk_id = c.id
+                    AND s.instrument_id = i.id AND s.embedding_model = %s
+                WHERE s.chunk_id IS NULL
+                ORDER BY c.id, i.id LIMIT %s""",
+                (embedding_model, limit),
+            ).fetchall()
+
+    def mark_chunks_synced(self, rows: Iterable[dict], embedding_model: str) -> int:
+        marked = 0
+        with self._transaction():
+            for row in rows:
+                result = self.connection.execute(
+                    """INSERT INTO snowflake_synced_chunks (chunk_id, instrument_id, embedding_model)
+                    VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING chunk_id""",
+                    (row["chunk_id"], row["instrument_id"], embedding_model),
+                ).fetchone()
+                marked += result is not None
+        return marked
+
     def save_evidence(self, run_id: str, passage: dict, *, retrieved_at: datetime,
                       strategy: str, cited_by: list[str]) -> None:
         with self._transaction():
@@ -395,7 +456,9 @@ class DatabaseRepository:
                 VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (run_id, passage["document_id"], passage["chunk_id"], role,
                  passage["text"], retrieved_at,
-                 _json({"strategy": strategy, "provided_to_model": True, "cited_by": cited_by})),
+                 _json({"strategy": strategy, "provided_to_model": True, "cited_by": cited_by,
+                        "retrieval": passage.get("retrieval") or (
+                            "postgres_fulltext" if passage.get("relevance") else "recency_fill")})),
             )
 
     def get_price_history(self, ticker: str, *, interval: str = "1d", limit: int = 500) -> list[dict]:
