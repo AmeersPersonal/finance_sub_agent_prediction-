@@ -116,6 +116,12 @@ requires the extension to be available. Migration tracking permits reruns
 without rebuilding the database. Do not assume that running a migration
 populates historical articles or prices: it creates the storage structures.
 
+Run it again after pulling new code: it applies only what's new. Migration 005
+adds shared sign-in tables (used only with `OAUTH_SESSION_STORE=database`);
+006 archives every price-bar correction so past datasets can be rebuilt
+exactly. Nothing in the forecast path needs either, so an older database keeps
+working until you migrate.
+
 ## 4. Save and evaluate predictions
 
 From `backend/src/`:
@@ -134,9 +140,23 @@ For a faster trial, choose one strategy and one age band as above. Five trading
 days is the default prediction horizon, not five minutes. Database configuration
 does not change forecasting or calibrate agent confidence.
 
+## 5. Backups and access roles
+
+What is kept, the backup schedule, source-use rules and database roles are in
+[retention-and-access.md](docs/retention-and-access.md). In short, from `backend/src/`:
+
+```bash
+python -m database.backup                           # pg_dump to backend/data/backups/, keeps 7 daily / 4 weekly / 12 monthly
+psql "$ADMIN_DATABASE_URL" -f database/roles.sql    # once per shared database, and after each migration
+```
+
+On a shared or hosted database, point the API's `DATABASE_URL` at the
+`finance_api` login that `roles.sql` creates, not at the owner. The local
+development cluster above can keep its single application role.
+
 ## Scope and verification
 
-This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG. Full publisher article scraping, Reddit ingestion, user accounts, and semantic vector retrieval are not implemented. See [the API walkthrough](docs/dashboard-api.md).
+This setup connects the CLI and local FastAPI dashboard routes to PostgreSQL. RSS excerpts and optional SEC filing text are stored and retrieved through keyword RAG. Signed-in accounts can save preferences (`/me/preferences`). Full publisher article scraping, Reddit ingestion, and semantic vector retrieval are not implemented. See [the API walkthrough](docs/dashboard-api.md).
 
 Connection and migration success must be checked against your actual service
 after private credentials are configured. Offline tests do not establish that
@@ -179,3 +199,12 @@ systemctl --user restart hack-knight-api.service
 Full route details are in [api/spec.md](../api/spec.md). The frontend still needs
 to call these endpoints; starting the API does not build or merge the Frontend
 branch. Database-backed requests create shared research forecasts, not trades.
+
+Creating forecasts needs a signed-in user by default. Without OAuth
+credentials on a development machine, set `API_REQUIRE_SIGN_IN=false` in
+`backend/.env` and restart the service.
+
+On a computer without these services, `docker compose up --build` from
+`backend/` starts PostgreSQL, applies the migrations and serves the API on
+`127.0.0.1:8000` (it needs `POSTGRES_PASSWORD` in `backend/.env`; see the
+comments in `docker-compose.yml`).

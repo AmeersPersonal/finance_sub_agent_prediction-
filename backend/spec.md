@@ -5,12 +5,12 @@
 - [x] Add a pointer to `src/spec.md` in a README once `src/oauth/` has an API surface (`README.md`).
 - [x] Add navigation through `README.md` and beginner database guides.
 - [x] Decide whether `data/` needs a retention policy. Decision: `predictions.jsonl` is kept forever (it's the scoring record, a few KB per prediction, and only live-logged predictions can be scored); `cache/bls_<date>.json` files older than 7 days are deleted by `ai/feeds.prune_cache` whenever a new one is written.
-- [ ] Define retention and backup policies for database records (PostgreSQL); the JSONL decision above does not cover them.
+- [x] Retention and backup policy for database records: `src/database/docs/retention-and-access.md`; backups with `python -m database.backup` (pg_dump, 7 daily / 4 weekly / 12 monthly).
 - [x] Add a lock file: `src/requirements.lock` is `uv pip compile --universal --generate-hashes` output (see Design notes).
 - [x] Regenerate `src/requirements.lock` after the database merge (2026-10-10): added `psycopg[binary]`, `exchange_calendars` and their dependencies; no existing pin changed. Now a universal lock (Windows, Linux, macOS; Python 3.12+), replacing the Windows-only pip-compile one.
 - [x] Decide on a home for non-Python tooling. Decision: a `Dockerfile` and `.dockerignore` go in `backend/` (build context `backend/`; `.dockerignore` must exclude `.env`, `.venv/` and `data/`); CI goes in the repo-root `.github/workflows/` (GitHub reads it only there) and runs from `backend/src/`. Nothing non-Python goes in `src/`.
-- [ ] If `predictions.jsonl` passes ~100 MB, rotate it by year (`predictions-2026.jsonl`) and make `load_log` read every file; never delete scored history.
-- [ ] Package deployment/startup for teammates and future hosting.
+- [x] `predictions.jsonl` rotates by year once it passes 100 MB (`predictions-2026.jsonl`, `ai.evaluation.rotate_log`); `load_log` reads the live file and every archive, deduplicated by prediction id.
+- [x] Package deployment/startup: `Dockerfile` (the API, from `src/requirements-api.lock`, no ml stack), `docker-compose.yml` (PostgreSQL, migrations, API on 127.0.0.1:8000), `.dockerignore`; CI in the repo-root `.github/workflows/backend.yml` (tests including PostgreSQL on a Unix socket, and an image build).
 
 ## Purpose
 
@@ -28,11 +28,16 @@ explanations. No real trades are executed.
 ```
 backend/
 ├── README.md       # setup and run commands; points to src/spec.md and the database guides
+├── Dockerfile      # the API image (src/requirements-api.lock), one worker, non-root
+├── docker-compose.yml  # local stack: PostgreSQL + migrations + API
+├── .dockerignore   # keeps .env, data/, tests and private documents out of the image
 ├── .env            # real secrets, gitignored, never read or print
-├── .env.example    # variable names only (GEMINI_*, OAUTH_*, DATABASE_URL, SEC_USER_AGENT, ...)
+├── .env.example    # variable names only (GEMINI_*, ALT_LLM_*, OAUTH_*, API_*, DATABASE_URL, LIVE_FEED, ...)
 ├── .venv/          # local virtualenv, gitignored
 ├── data/           # runtime output, gitignored
 │   ├── predictions.jsonl     # prediction log (appended by the CLI without --database, read by --score)
+│   ├── predictions-<year>.jsonl  # yearly archives once the log passes 100 MB
+│   ├── backups/              # python -m database.backup: pg_dump files, pruned by schedule
 │   ├── models/               # python -m ml ... --save: <name>-<time>.joblib + .json sidecar
 │   ├── postgres/             # persistent local PostgreSQL cluster
 │   ├── pgsocket/             # local admin connection socket
@@ -65,7 +70,11 @@ backend/
   once and marks platform-only packages (`colorama ; sys_platform == 'win32'`,
   PyTorch's `nvidia-*` / `triton` ; `sys_platform == 'linux'`), so the lock
   works on any OS with Python 3.12+, and the existing lock is kept as a
-  preference, so unrelated pins don't move. `setuptools` (which `torch` needs) is
+  preference, so unrelated pins don't move. Regenerate the API image's lock the
+  same way: `uv pip compile requirements-api.in -c requirements.txt --universal
+  --python-version 3.12 --generate-hashes -o requirements-api.lock`
+  (`requirements-api.in` lists names only; versions come from
+  `requirements.txt`). `setuptools` (which `torch` needs) is
   included. Install reproducibly with `pip install --require-hashes -r
   requirements.lock`. PyPI's `torch` is CPU-only on Windows and macOS but the
   CUDA build on Linux (several GB of `nvidia-*` packages). For a CPU-only Linux

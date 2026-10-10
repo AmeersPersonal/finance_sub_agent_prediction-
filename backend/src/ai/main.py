@@ -14,7 +14,7 @@ from ai.confidence_score import aggregate
 from ai.evaluation import baselines
 from ai.features import extract_features
 from ai.live import LiveFeed, apply_live_quote
-from ai.llm import GeminiLLM, JsonLLM
+from ai.llm import JsonLLM, build_llm
 from ai.modes import DEFAULT_MODE, ReasoningMode
 from ai.personas import Strategy, build_personas
 from ai.schemas import Prediction
@@ -59,7 +59,7 @@ async def predict(
     API keys. With a `live_feed`, the snapshot's last price comes from its first tick."""
     personas = build_personas(strategies, age_bands)
     modes = tuple(modes or (DEFAULT_MODE,))
-    llm = llm or GeminiLLM()
+    llm = llm or build_llm()
     snapshot = snapshot or await asyncio.to_thread(fetch_snapshot, ticker)
     close = snapshot.daily["Close"]
     warnings = [f"{source}: {why}" for source, why in snapshot.errors.items()]

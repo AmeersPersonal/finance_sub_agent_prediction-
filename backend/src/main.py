@@ -26,8 +26,8 @@ from typing import Literal
 from dotenv import load_dotenv
 
 from ai.evaluation import DEFAULT_LOG, Report, log_prediction, score_log
-from ai.live import YahooLiveFeed
-from ai.llm import GeminiLLM, JsonLLM
+from ai.live import live_feed_from_env
+from ai.llm import JsonLLM, build_llm
 from ai.main import predict
 from ai.modes import resolve_modes
 from ai.personas import AGE_BANDS, Strategy
@@ -279,8 +279,15 @@ def render_report(r: Report) -> str:
         f"of the time, {_pct(r.accuracy_when_called)} right when it did)",
     ]
     lines += [f"  {name:<18} {_pct(acc)}" for name, acc in r.accuracy.items() if name != "personas"]
+    if r.relative:
+        rel = r.relative
+        lines += ["", f"Relative to {rel['benchmark']} ({rel['scored']} scored; always-up can't ride the market here):"]
+        lines += [f"  {name:<18} {_pct(acc)}" for name, acc in rel["accuracy"].items()]
     lines += ["", "Persona up/down calls by strength (is higher strength more often right?):"]
     lines += [f"  {bucket}  n={n:<4} {_pct(acc)}" for bucket, (n, acc) in r.by_confidence.items()]
+    if any(n for n, _ in r.by_stability.values()):
+        lines += ["By stability (share of persona-mode samples matching the call):"]
+        lines += [f"  {bucket}  n={n:<4} {_pct(acc)}" for bucket, (n, acc) in r.by_stability.items()]
     lines += ["", "Individual persona votes, by strategy:"]
     lines += [f"  {s:<15} {_pct(acc)}" for s, acc in r.by_strategy.items()]
     lines += ["By age band:"]
@@ -351,11 +358,15 @@ async def _predict_all(
     llm: JsonLLM | None = None,
 ) -> int:
     try:
-        llm = llm or GeminiLLM()
+        llm = llm or build_llm()
     except RuntimeError as exc:  # missing API key
         print(f"error: {exc}", file=sys.stderr)
         return len(args.tickers)
-    feed = YahooLiveFeed() if args.live else None
+    try:
+        feed = live_feed_from_env() if args.live else None
+    except (RuntimeError, ValueError) as exc:  # unknown LIVE_FEED or missing FINNHUB_API_KEY
+        print(f"error: {exc}", file=sys.stderr)
+        return len(args.tickers)
     failures = 0
     for ticker in args.tickers:
         try:

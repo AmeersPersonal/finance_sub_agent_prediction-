@@ -22,6 +22,8 @@ CORE_MIGRATIONS = [
     "001_initial.sql",
     "003_dataset.sql",
     "004_evaluations_immutable.sql",
+    "005_oauth_sessions.sql",
+    "006_price_bar_revisions.sql",
 ]
 
 
@@ -374,3 +376,82 @@ def test_default_mode_keeps_the_original_persona_key():
     base = dict(persona_id="day_trader:18-24", strategy="day_trader", age_band="18-24")
     assert persona_output_key(PersonaResult(**base)) == "persona:day_trader:18-24"
     assert persona_output_key(PersonaResult(**base, mode="t1.0")) == "persona:day_trader:18-24:t1.0"
+
+
+def test_shared_session_store_round_trip_and_expiry(db):
+    from contextlib import contextmanager
+
+    from oauth.sessions import DatabaseStore, LOGIN_TTL, SESSION_TTL
+
+    @contextmanager
+    def same_connection():
+        yield db  # the test schema's connection, in autocommit
+
+    now = [datetime(2026, 10, 9, 12, tzinfo=timezone.utc)]
+    store, other_worker = (DatabaseStore(same_connection, clock=lambda: now[0]) for _ in range(2))
+    state, verifier = store.begin_login()
+    # Only hashes of the state and the session id are stored.
+    assert db.execute("SELECT state_hash FROM oauth_pending_logins").fetchone()["state_hash"] != state
+    assert other_worker.finish_login(state) == verifier  # another worker completes the login
+    assert other_worker.finish_login(state) is None  # once
+    session = store.create_session({"sub": "user-1", "email": "user@example.com"})
+    assert other_worker.get_session(session) == {"sub": "user-1", "email": "user@example.com"}
+    assert session not in str(db.execute("SELECT * FROM oauth_sessions").fetchall())
+    store.end_session(session)
+    assert other_worker.get_session(session) is None
+    # Expired logins and sessions are refused, then swept on the next write.
+    late_state, _ = store.begin_login()
+    session = store.create_session({"sub": "user-2"})
+    now[0] += max(LOGIN_TTL, SESSION_TTL) + timedelta(seconds=1)
+    assert store.finish_login(late_state) is None and store.get_session(session) is None
+    store.create_session({"sub": "user-3"})
+    assert db.execute("SELECT count(*) AS n FROM oauth_sessions").fetchone()["n"] == 1
+
+
+def test_user_preferences_upsert_and_delete(db):
+    repo = DatabaseRepository(db)
+    account = "idp.example:user-1"
+    assert repo.get_user_preferences(account) is None
+    saved = repo.save_user_preferences(account, age_band="25-39", strategy="day_trader",
+                                       experience_level="beginner", preferences={"theme": "dark"})
+    assert saved["strategy"] == "day_trader" and saved["preferences"] == {"theme": "dark"}
+    again = repo.save_user_preferences(account, age_band=None, strategy="long_term",
+                                       experience_level=None, preferences={})
+    assert again["strategy"] == "long_term" and again["age_band"] is None
+    assert again["updated_at"] >= saved["updated_at"]
+    with pytest.raises(DatabaseError):  # the table's own checks back up the API's validation
+        repo.save_user_preferences(account, age_band="16-17", strategy=None,
+                                   experience_level=None, preferences={})
+    assert repo.delete_user_preferences(account) and not repo.delete_user_preferences(account)
+
+
+def test_price_corrections_are_archived_and_replayable(db):
+    from database.model_data import load_daily_prices_as_known
+
+    repo = DatabaseRepository(db)
+    first_fetch = datetime(2026, 10, 2, 21, tzinfo=timezone.utc)
+    dates = pd.bdate_range("2026-09-01", periods=20, tz="America/New_York")
+    bars = [{"bar_at": at.to_pydatetime(), "close": 100.0 + n, "volume": 1000, "fetched_at": first_fetch}
+            for n, at in enumerate(dates)]
+    repo.save_price_bars("TEST", bars, interval="1d", adjustment_basis="total_return")
+    # A later refresh corrects one close and adds a new bar.
+    corrected_at = first_fetch + timedelta(days=3)
+    repo.save_price_bars("TEST", [{**bars[5], "close": 555.0, "fetched_at": corrected_at},
+                                  {"bar_at": datetime(2026, 9, 29, 4, tzinfo=timezone.utc), "close": 120.0,
+                                   "volume": 1000, "fetched_at": corrected_at}],
+                         interval="1d", adjustment_basis="total_return")
+    revisions = db.execute("SELECT close, change FROM price_bar_revisions").fetchall()
+    assert [(float(r["close"]), r["change"]) for r in revisions] == [(105.0, "update")]
+    # Unchanged refreshes archive nothing.
+    repo.save_price_bars("TEST", bars[:3], interval="1d", adjustment_basis="total_return")
+    assert db.execute("SELECT count(*) AS n FROM price_bar_revisions").fetchone()["n"] == 1
+
+    before = load_daily_prices_as_known(repo, "TEST", as_of=first_fetch + timedelta(hours=1))
+    assert len(before) == 20 and before["Close"].iloc[5] == 105.0  # the original value
+    after = load_daily_prices_as_known(repo, "TEST", as_of=corrected_at + timedelta(hours=1))
+    assert len(after) == 21 and after["Close"].iloc[5] == 555.0
+    with pytest.raises(psycopg.Error):
+        db.execute("DELETE FROM price_bar_revisions")
+    # Deleting a bar archives it too, so history before the deletion still has it.
+    db.execute("DELETE FROM price_bars WHERE close = 120")
+    assert len(load_daily_prices_as_known(repo, "TEST", as_of=corrected_at + timedelta(hours=1))) == 21

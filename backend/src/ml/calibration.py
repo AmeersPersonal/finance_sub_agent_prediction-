@@ -1,11 +1,14 @@
-"""Phase 2 levers 1, 2 and 5 (`ml/spec.md`), on scored persona calls.
+"""Phase 2 levers 1, 2, 5 and 6 (`ml/spec.md`), on scored persona calls.
 
 1. Accuracy at coverage: the persona call's hit rate on its strongest 50% and
    30% of calls, and when all strategies agree, each beside always-up on the
    same rows (picking a subset moves the base rate too).
 2. Strength calibrated into P(call is right), isotonic or Platt, judged
    walk-forward by Brier score against a constant hit rate.
-5. The same tables for calls with earnings inside the horizon and without.
+5. The same tables for calls with earnings inside the horizon and without, and
+   for calls made while insiders were buying in a cluster and without.
+6. Ranking: on each day with enough tickers predicted, long the top fifth by
+   the personas' net score and short the bottom fifth.
 
 "unclear" calls count as wrong with strength 0, as in `ai.evaluation.score`.
 """
@@ -13,13 +16,32 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
 from ai.evaluation import Outcome
-from ml.walkforward import schedule
+from ml.walkforward import MIN_RANK_TICKERS, RANK_QUANTILE, schedule
+
+INSIDERS = "long_term.insiders_last_6m."  # the packet's keys in Prediction.features
+MIN_CLUSTER_BUYS = 3
+
+
+def insider_buying_cluster(prediction) -> bool | None:
+    """Several insider purchases and net buying, from the long-term packet.
+
+    yfinance reports insider activity as trailing-6-month totals without dates,
+    so "cluster" means at least `MIN_CLUSTER_BUYS` purchase transactions and
+    more shares bought than sold over those 6 months; a narrower window inside
+    the horizon isn't available. None when the packet had no insider data.
+    """
+    features = prediction.features or {}
+    buys, net = features.get(INSIDERS + "buy_transactions"), features.get(INSIDERS + "net_shares")
+    if buys is None or net is None:
+        return None
+    return buys >= MIN_CLUSTER_BUYS and net > 0
 
 COVERAGES = (1.0, 0.5, 0.3)
 METHODS = ("isotonic", "platt")
@@ -34,6 +56,8 @@ class CallRows:
     agree: np.ndarray  # an up/down call that every strategy's net score leans toward
     dates: np.ndarray
     known_on: np.ndarray
+    insider_cluster: np.ndarray  # insiders were buying in a cluster (False when unknown)
+    insider_known: np.ndarray  # the long-term packet had insider data
 
     def take(self, mask: np.ndarray) -> CallRows:
         return CallRows(**{k: v[mask] for k, v in self.__dict__.items()})
@@ -47,7 +71,10 @@ def _strategies_agree(prediction) -> bool:
 
 def call_rows(outcomes: Sequence[Outcome]) -> CallRows:
     outcomes = sorted(outcomes, key=lambda o: o.prediction.data_as_of)
+    clusters = [insider_buying_cluster(o.prediction) for o in outcomes]
     return CallRows(
+        insider_cluster=np.array([bool(c) for c in clusters], dtype=bool),
+        insider_known=np.array([c is not None for c in clusters], dtype=bool),
         strength=np.array(
             [0.0 if o.prediction.direction == "unclear" else o.prediction.confidence for o in outcomes]
         ),
@@ -98,6 +125,43 @@ def coverage_report(outcomes: Sequence[Outcome]) -> dict[str, list[CoverageRow]]
         "all strategies agree": accuracy_at_coverage(agree, (1.0,)),
         "earnings inside the horizon": accuracy_at_coverage(rows.take(rows.earnings)),
         "no earnings inside the horizon": accuracy_at_coverage(rows.take(~rows.earnings)),
+        "insider buying cluster": accuracy_at_coverage(rows.take(rows.insider_known & rows.insider_cluster)),
+        "no insider buying cluster": accuracy_at_coverage(
+            rows.take(rows.insider_known & ~rows.insider_cluster)
+        ),
+    }
+
+
+def persona_rank_spread(outcomes: Sequence[Outcome]) -> dict | None:
+    """Lever 6 for the personas: on each data date and horizon with at least
+    `MIN_RANK_TICKERS` tickers predicted, long the top `RANK_QUANTILE` by net score
+    and short the bottom, held over the horizon. The latest forecast per ticker
+    and day counts once.
+
+    Days with horizons longer than one day overlap, so `positive_share` isn't a
+    count of independent bets. None until some day has enough tickers.
+    """
+    groups: dict[tuple[str, int], dict[str, Outcome]] = defaultdict(dict)
+    for o in sorted(outcomes, key=lambda o: o.prediction.generated_at):
+        groups[(o.prediction.data_as_of, o.prediction.horizon_days)][o.prediction.ticker] = o
+    spreads, sizes = [], []
+    for _, by_ticker in sorted(groups.items()):
+        n = len(by_ticker)
+        if n < MIN_RANK_TICKERS:
+            continue
+        k = max(1, int(n * RANK_QUANTILE))
+        ranked = sorted(by_ticker.values(), key=lambda o: (o.prediction.net_score, o.prediction.ticker))
+        returns = np.array([o.return_pct / 100 for o in ranked])
+        spreads.append(returns[-k:].mean() - returns[:k].mean())
+        sizes.append(n)
+    if not spreads:
+        return None
+    spreads = np.array(spreads)
+    return {
+        "periods": len(spreads),
+        "mean_tickers": float(np.mean(sizes)),
+        "mean_spread_pct": float(spreads.mean() * 100),
+        "positive_share": float((spreads > 0).mean()),
     }
 
 

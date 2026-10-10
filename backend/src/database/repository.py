@@ -399,6 +399,70 @@ class DatabaseRepository:
             ).fetchall()
         return rows
 
+    def get_price_history_as_of(self, ticker: str, *, as_of: datetime, interval: str = "1d",
+                                start_at: datetime | None = None,
+                                end_at: datetime | None = None) -> list[dict]:
+        """Bars exactly as they were known at `as_of`: for each bar, the version
+        fetched by then and not yet superseded, from `price_bars` and the
+        `price_bar_revisions` archive (migration 006). Bars first fetched later,
+        and corrections made later, are left out."""
+        symbol = ticker.strip().upper()
+        with self._transaction():
+            return self.connection.execute(
+                """WITH versions AS (
+                    SELECT p.bar_at, p.open, p.high, p.low, p.close, p.volume, p.fetched_at
+                    FROM price_bars p JOIN instruments i ON i.id = p.instrument_id
+                    WHERE i.symbol = %s AND p.interval = %s AND p.provider = 'yfinance'
+                      AND p.adjustment_basis = 'total_return' AND p.fetched_at <= %s
+                    UNION ALL
+                    SELECT r.bar_at, r.open, r.high, r.low, r.close, r.volume, r.fetched_at
+                    FROM price_bar_revisions r JOIN instruments i ON i.id = r.instrument_id
+                    WHERE i.symbol = %s AND r.interval = %s AND r.provider = 'yfinance'
+                      AND r.adjustment_basis = 'total_return' AND r.fetched_at <= %s
+                      AND r.superseded_at > %s
+                )
+                SELECT DISTINCT ON (bar_at) bar_at, open, high, low, close, volume, fetched_at
+                FROM versions
+                WHERE bar_at <= %s
+                  AND (%s::timestamptz IS NULL OR bar_at >= %s)
+                  AND (%s::timestamptz IS NULL OR bar_at <= %s)
+                ORDER BY bar_at, fetched_at DESC""",
+                (symbol, interval, as_of, symbol, interval, as_of, as_of, as_of,
+                 start_at, start_at, end_at, end_at),
+            ).fetchall()
+
+    def get_user_preferences(self, account_reference: str) -> dict | None:
+        with self._transaction():
+            return self.connection.execute(
+                """SELECT age_band, strategy, experience_level, preferences, updated_at
+                FROM user_preferences WHERE account_reference = %s""", (account_reference,),
+            ).fetchone()
+
+    def save_user_preferences(self, account_reference: str, *, age_band: str | None,
+                              strategy: str | None, experience_level: str | None,
+                              preferences: dict[str, Any]) -> dict:
+        """Create or replace one account's preferences (the row is mutable by design)."""
+        with self._transaction():
+            return self.connection.execute(
+                """INSERT INTO user_preferences
+                (account_reference, age_band, strategy, experience_level, preferences)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (account_reference) DO UPDATE SET
+                    age_band = EXCLUDED.age_band, strategy = EXCLUDED.strategy,
+                    experience_level = EXCLUDED.experience_level,
+                    preferences = EXCLUDED.preferences, updated_at = now()
+                RETURNING age_band, strategy, experience_level, preferences, updated_at""",
+                (account_reference, age_band, strategy, experience_level, _json(preferences)),
+            ).fetchone()
+
+    def delete_user_preferences(self, account_reference: str) -> bool:
+        with self._transaction():
+            row = self.connection.execute(
+                "DELETE FROM user_preferences WHERE account_reference = %s RETURNING account_reference",
+                (account_reference,),
+            ).fetchone()
+        return row is not None
+
     def get_model_price_rows(self, ticker: str, *, cutoff: datetime,
                              start_at: datetime | None = None,
                              end_at: datetime | None = None) -> list[dict]:

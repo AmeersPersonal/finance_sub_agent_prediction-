@@ -1,0 +1,57 @@
+# Local stack for teammates: PostgreSQL, the schema migrations, and the API on
+# http://localhost:8000 (docs at /docs). From backend/:
+#
+#   docker compose up --build        # needs POSTGRES_PASSWORD (and GEMINI_API_KEY) in backend/.env
+#   docker compose down              # keeps the database volume; add -v to delete it
+#
+# The API reads the rest of backend/.env (GEMINI_*, OAUTH_*, API_*). Without
+# OAuth credentials, set API_REQUIRE_SIGN_IN=false there to create forecasts
+# locally. Ports bind to 127.0.0.1 only: this is a development stack.
+name: finance-backend
+
+x-app: &app
+  build: .
+  image: finance-backend:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # Letters and digits only in POSTGRES_PASSWORD, or it breaks this URL.
+    DATABASE_URL: postgresql://finance:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env}@db:5432/finance?sslmode=disable
+
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: finance
+      POSTGRES_USER: finance
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance -d finance"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *app
+    command: ["python", "-m", "database.migrate"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

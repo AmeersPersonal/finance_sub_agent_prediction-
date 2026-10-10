@@ -134,15 +134,10 @@ class RegressionResult:
     buy_and_hold: dict  # same periods
 
 
-def run_regression(
-    daily: pd.DataFrame,
-    horizon_days: int,
-    test_fraction: float = 0.2,
-    cost_bps: float = 5.0,
-    features: Sequence[str] = FEATURES,
-) -> RegressionResult:
+def _usable_rows(daily: pd.DataFrame, horizon_days: int, feature_names: Sequence[str]):
+    """Features, the mask of rows with features, the mask of rows with a known target
+    too, and X, y, flat band over those rows. Needs at least 100 of them."""
     close = daily["Close"]
-    feature_names = tuple(features)
     features = build_features(daily, feature_names)
     target = forward_return(close, horizon_days)
     band = flat_band_series(close, horizon_days)
@@ -152,6 +147,50 @@ def run_regression(
     X, y, b = features[known].to_numpy(), target[known].to_numpy(), band[known].to_numpy()
     if len(X) < 100:
         raise ValueError(f"Need at least 100 usable days for the regression, have {len(X)}")
+    return features, has_features, known, X, y, b
+
+
+def period_returns(
+    daily: pd.DataFrame,
+    horizon_days: int,
+    test_fraction: float = 0.2,
+    cost_bps: float = 5.0,
+    features: Sequence[str] = FEATURES,
+) -> pd.DataFrame:
+    """Per-period returns behind `run_regression`'s `strategy` and `buy_and_hold` summaries.
+
+    One row per non-overlapping holding period of the walk-forward window, indexed
+    by the day the period starts, with `end` (the day it closes) and the net return
+    of trading the regression's sign and of holding, both after costs.
+    """
+    _, _, known, X, y, b = _usable_rows(daily, horizon_days, tuple(features))
+    split = int(len(X) * (1 - test_fraction))
+    predicted, _ = walk_forward(X, y, split, horizon_days)
+    actual = y[split:]
+
+    periods = slice(None, None, horizon_days)
+    cost = cost_bps / 10_000
+    starts = daily.index[known.to_numpy()][split:][periods]
+    ends = daily.index[daily.index.get_indexer(starts) + horizon_days]
+    return pd.DataFrame(
+        {
+            "end": ends,
+            "strategy": strategy_returns(predicted[periods], actual[periods], cost),
+            "buy_and_hold": strategy_returns(np.ones_like(actual[periods]), actual[periods], cost),
+        },
+        index=starts,
+    )
+
+
+def run_regression(
+    daily: pd.DataFrame,
+    horizon_days: int,
+    test_fraction: float = 0.2,
+    cost_bps: float = 5.0,
+    features: Sequence[str] = FEATURES,
+) -> RegressionResult:
+    feature_names = tuple(features)
+    features, has_features, known, X, y, b = _usable_rows(daily, horizon_days, feature_names)
 
     split = int(len(X) * (1 - test_fraction))
     predicted, benchmark = walk_forward(X, y, split, horizon_days)

@@ -8,9 +8,9 @@
 - [x] Define where tokens are stored: see Token storage.
 - [x] Add a `state` check for the callback route (CSRF): state cookie + server-side single-use state, plus PKCE.
 - [x] Tests with a fake provider; no network (`tests/test_oauth.py`).
-- [ ] Before running more than one worker process, move `MemoryStore` to a shared server-side cache (Redis). Never to files in the repo.
-- [ ] If the API ever trusts the ID token instead of calling userinfo, verify its signature (JWKS), `aud`, `iss`, `exp` and a `nonce`.
-- [ ] Delete the now-unneeded `.gitkeep`.
+- [x] Shared store for several workers: `DatabaseStore` keeps pending logins and sessions in PostgreSQL (migration 005), storing only SHA-256 hashes of the state values and session ids. `OAUTH_SESSION_STORE=database` selects it; memory stays the default. PostgreSQL rather than Redis: the API already needs it, so no new service or dependency.
+- [x] ID tokens: the API calls userinfo and never trusts the ID token; that's now a rule below, not a task.
+- [x] Deleted the `.gitkeep`.
 
 ## Purpose
 
@@ -40,8 +40,9 @@ POST /oauth/logout    -> ends the session
   profile, then dropped. They're never stored, logged or written to disk.
 - The browser holds only an opaque random session id (HttpOnly, SameSite=Lax,
   Secure unless `OAUTH_COOKIE_SECURE=false`).
-- The server maps session id -> `{sub, email, name}` in process memory
-  (`sessions.py`) for 8 hours. A restart signs everyone out.
+- The server maps session id -> `{sub, email, name}` for 8 hours: in process
+  memory by default (a restart signs everyone out), or in PostgreSQL with
+  `OAUTH_SESSION_STORE=database`, where only a hash of the id is stored.
 - Client id and secret come from the environment only.
 
 ## Files
@@ -49,12 +50,16 @@ POST /oauth/logout    -> ends the session
 | File | Role |
 |---|---|
 | `provider.py` | `OAuthSettings.from_env()` (Google defaults), `pkce_challenge`, `Provider` protocol, `HttpProvider` (token exchange + userinfo via httpx) |
-| `sessions.py` | `MemoryStore`: pending logins (state -> verifier) and sessions, with expiry; thread-safe |
-| `routes.py` | The four routes above, plus `current_user` for other routes to require sign-in. Settings, store and provider are dependencies tests override |
-| `.gitkeep` | no longer needed |
+| `sessions.py` | `SessionStore` protocol; `MemoryStore` (default, one process, thread-safe) and `DatabaseStore` (shared through PostgreSQL); `store_from_env` picks one from `OAUTH_SESSION_STORE` |
+| `routes.py` | The four routes above, plus `current_user` for other routes to require sign-in. Settings, store and provider are dependencies tests override; the store is created on first use, after `.env` is loaded |
 
 ## Rules
 
 - Client secrets, tokens and keys stay out of git; load them from environment variables.
 - Do not weaken the OAuth patterns in the root `.gitignore`.
 - Never log tokens or the authorization code; log only the error type.
+- Identity comes from the userinfo endpoint over TLS. If the API ever trusts the
+  ID token instead, verify its signature (JWKS), `aud`, `iss`, `exp` and a
+  `nonce` first.
+- Account data is keyed by `<userinfo host>:<sub>`, never the email, which can
+  change hands (`api.main.account_reference`).

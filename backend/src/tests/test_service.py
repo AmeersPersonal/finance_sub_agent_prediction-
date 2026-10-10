@@ -260,7 +260,7 @@ def test_forecast_options_reach_predict_and_are_saved(monkeypatch, repository, o
         async def first_tick(self, ticker, timeout):
             return {'price': 150.0}
 
-    monkeypatch.setattr(service, 'YahooLiveFeed', Feed)
+    monkeypatch.setattr(service, 'live_feed_from_env', Feed)
     p = asyncio.run(service.predict_and_store(
         'TEST', strategies=[Strategy.DAY_TRADER], age_bands=['18-24'], llm=fake_llm,
         strategy_weights={'day_trader': 2.0}, modes=resolve_modes('temps'), live=True, audit=True))

@@ -9,9 +9,9 @@
 - [x] `info.py`: purpose defined as company overview plus data validation.
 - [x] `__init__.py` and tests (`tests/test_audit.py`, using `fake_llm`).
 - [x] The model is reached only through `ai/llm.py`'s `JsonLLM`.
-- [ ] Tune the risk thresholds (volatility 35% / 60%, agreement 0.6, strength 0.25) against scored outcomes once the log has a few hundred entries.
-- [ ] The digest sees RSS titles and descriptions only. Full articles would need a scraper and care with publishers' terms.
-- [ ] Add richer passage-based summaries after evaluating citation quality.
+- [ ] Tune the risk thresholds (volatility 35% / 60%, agreement 0.6, strength 0.25) against scored outcomes once the log has a few hundred entries. Blocked on data.
+- [x] Full articles for the digest: decided against. The project never follows publisher links or stores full articles (`sources/spec.md`, the source-use table in `database/docs/retention-and-access.md`); the digest summarises RSS titles and descriptions and links to the originals.
+- [ ] Add richer passage-based summaries after evaluating citation quality. Blocked: judging whether cited passages support each claim needs scored forecasts and a human-labelled sample.
 
 ## Purpose
 
@@ -20,12 +20,6 @@ Explain and sanity-check a prediction for a human reader. Runs after
 `Prediction.audit`. Enabled by `--audit` on the CLI or `"audit": true` on
 the prediction request. Database-backed forecasts also get `Prediction.learning`
 (plain-language explanations and a source digest), which uses no LLM call.
-
-| File | Role |
-|---|---|
-| `media.py` | Deduplicated source titles, URLs, publication dates, and coverage labels. This is a source digest, not an invented full-article summary. |
-| `risk.py` | Explains the forecast question, confidence, regression, flat/unclear, and existing risk calculations. Includes strategy learning context. |
-| `analysis.py`, `info.py` | Unused placeholders. |
 
 | File | Role |
 |---|---|

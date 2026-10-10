@@ -5,7 +5,8 @@
     python -m ml price --target relative        # lever 4: return relative to SPY
     python -m ml price --models logistic --save # also fit on every row and store it
     python -m ml stacker [--save]               # model B; needs 300 scored predictions
-    python -m ml coverage                       # levers 1, 2 and 5 on scored persona calls
+    python -m ml stacker --target relative      # model B on the outcome relative to SPY
+    python -m ml coverage                       # levers 1, 2, 5 and 6 on scored persona calls
     python -m ml stacker --database             # the same, on forecasts saved in PostgreSQL
 
 An explicit command, never run at request time. `price` downloads daily bars
@@ -26,7 +27,13 @@ import pandas as pd
 from ai.evaluation import DEFAULT_LOG, score_log
 from ai.tool import clean_daily, fetch_daily
 from finance.linear_regression import FEATURE_FUNCTIONS, FEATURES
-from ml.calibration import CalibrationScore, CoverageRow, coverage_report, evaluate_calibration
+from ml.calibration import (
+    CalibrationScore,
+    CoverageRow,
+    coverage_report,
+    evaluate_calibration,
+    persona_rank_spread,
+)
 from ml.dataset import pooled_price_rows, stacker_rows
 from ml.model import MODELS, LogisticModel, get_device, make_model
 from ml.store import save
@@ -90,6 +97,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="refuse to evaluate below this many scored predictions")
     stacker.add_argument("--include-packet", action="store_true",
                          help="also learn from Prediction.features (hundreds of columns)")
+    stacker.add_argument("--target", choices=("absolute", "relative"), default="absolute",
+                         help=f"relative: the outcome vs {BENCHMARK}, from the scorer's relative outcome")
     stacker.add_argument("--save", action="store_true")
 
     coverage = commands.add_parser("coverage", help="accuracy at coverage and strength calibration")
@@ -236,13 +245,13 @@ def run_price(args: argparse.Namespace) -> int:
 # --- stacker (model B) -----------------------------------------------------------
 
 
-def render_stacker(r: StackerReport) -> str:
+def render_stacker(r: StackerReport, target: str = "absolute") -> str:
+    name = "Model B (persona stacker)" + (f", relative to {BENCHMARK}" if target == "relative" else "")
     if r.blocked:
-        return f"Model B (persona stacker): blocked, {r.blocked}. Keep logging live predictions."
+        return f"{name}: blocked, {r.blocked}. Keep logging live predictions."
     baselines = "  ".join(f"{k} {_pct(v)}" for k, v in r.baselines.items())
     lines = [
-        f"Model B (persona stacker): {r.scored} scored predictions, {r.n_test} held out "
-        f"from {r.test_start}",
+        f"{name}: {r.scored} scored predictions, {r.n_test} held out from {r.test_start}",
         f"Baselines, 3-way accuracy on the held-out rows: {baselines}",
         "",
         f"  {'model':<13} {'accuracy':>8} {'log-loss':>9} {'Brier':>6}",
@@ -292,11 +301,11 @@ def scored_predictions(args: argparse.Namespace):
 
 def run_stacker(args: argparse.Namespace) -> int:
     scored = scored_predictions(args)
-    data = stacker_rows(scored.outcomes, include_packet=args.include_packet)
+    data = stacker_rows(scored.outcomes, include_packet=args.include_packet, target=args.target)
     report = evaluate_stacker(
         data, args.models, args.test_fraction, args.refit_every, min_scored=args.min_scored
     )
-    print(render_stacker(report))
+    print(render_stacker(report, args.target))
     if report.blocked:
         return 0
     for name in args.models:
@@ -307,29 +316,48 @@ def run_stacker(args: argparse.Namespace) -> int:
             score = next(m for m in report.models if m.name == name)
             meta = {
                 "kind": "model_b",
+                "target": args.target,
                 "columns": list(data.feature_names),
                 "rows": len(data),
                 "data_through": str(data.dates.max()),
                 "walk_forward": {"accuracy": score.accuracy, "log_loss": score.log_loss,
                                  "passes_gate": score.passes_gate},
             }
-            print(f"saved {save(model, f'stacker-{name}', meta)}")
+            suffix = "-relative" if args.target == "relative" else ""
+            print(f"saved {save(model, f'stacker-{name}{suffix}', meta)}")
     return 0
 
 
 # --- coverage (levers 1, 2, 5) ---------------------------------------------------
 
 
-def render_coverage(tables: dict[str, list[CoverageRow]], calibration: CalibrationScore | None) -> str:
+def render_rank_spread(spread: dict | None) -> list[str]:
+    if spread is None:
+        return ["", "Persona ranking (lever 6): no day had 5 or more tickers predicted yet."]
+    return [
+        "",
+        f"Persona ranking (lever 6), long the top fifth by net score and short the bottom: "
+        f"{spread['mean_spread_pct']:+.2f}% a period over {spread['periods']} days "
+        f"(~{spread['mean_tickers']:.0f} tickers each), positive {spread['positive_share']:.0%}. "
+        "Periods overlap for horizons over a day.",
+    ]
+
+
+def render_coverage(tables: dict[str, list[CoverageRow]], calibration: CalibrationScore | None,
+                    spread: dict | None = None) -> str:
     lines = ["Persona calls at coverage: 3-way accuracy, always-up on the same rows:"]
     for title, rows in tables.items():
         lines.append(f"  {title}")
+        if not rows or not rows[0].n:
+            lines.append("    no calls")
+            continue
         for row in rows:
             threshold = "" if row.min_strength is None else f"strength >= {row.min_strength:.2f}"
             lines.append(
                 f"    {row.label:<9} n={row.n:<5} {threshold:<17} {_pct(row.accuracy):>6}  "
                 f"(always-up {_pct(row.always_up)})"
             )
+    lines += render_rank_spread(spread)
     if calibration is None:
         lines += ["", "Strength calibration: too few resolved calls to fit before a held-out block."]
         return "\n".join(lines)
@@ -350,7 +378,8 @@ def run_coverage(args: argparse.Namespace) -> int:
     if not report.outcomes:
         print(f"No predictions have resolved yet ({report.pending} pending).")
         return 0
-    print(render_coverage(coverage_report(report.outcomes), evaluate_calibration(report.outcomes)))
+    print(render_coverage(coverage_report(report.outcomes), evaluate_calibration(report.outcomes),
+                          persona_rank_spread(report.outcomes)))
     return 0
 
 

@@ -3,6 +3,9 @@
 A prediction runs every persona under every selected mode. Modes are collapsed
 back into one view per persona by `confidence_score.aggregate`, so adding modes
 adds samples, not weight.
+
+The `alt` mode runs on the second, OpenAI-compatible provider (`ai/llm.py`); it
+exists only when `ALT_LLM_BASE_URL` and `ALT_LLM_MODEL` are set.
 """
 
 from __future__ import annotations
@@ -10,7 +13,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ai.llm import ALT_PREFIX, alt_configured
+
 DEFAULT_STRONG_MODEL = "gemini-3.8-flash"
+ALT_MODES = frozenset({"alt", "providers"})  # need the second provider
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "temps": ("t0.2", "t0.7", "t1.0"),  # same model, three temperatures
     "models": ("default", "strong"),  # two models, default temperature
     "full": ("base-t0.2", "base-t1.0", "strong-t0.2", "strong-t1.0"),
+    "providers": ("default", "alt"),  # Gemini and the second provider
 }
 
 
@@ -47,6 +54,8 @@ def catalog() -> dict[str, ReasoningMode]:
             )
         ),
     ]
+    if alt_configured():
+        modes.append(ReasoningMode("alt", ALT_PREFIX + os.environ["ALT_LLM_MODEL"]))
     return {m.name: m for m in modes}
 
 
@@ -58,6 +67,8 @@ def resolve_modes(spec: str | None) -> tuple[ReasoningMode, ...]:
         token = token.strip()
         if not token:
             continue
+        if token in ALT_MODES and "alt" not in known:
+            raise ValueError(f"Mode {token!r} needs a second provider: set ALT_LLM_BASE_URL and ALT_LLM_MODEL")
         if token in PRESETS:
             names.extend(PRESETS[token])
         elif token in known:

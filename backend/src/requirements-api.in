@@ -1,0 +1,15 @@
+# What the HTTP API (api.main) and the CLI's forecast path import at runtime:
+# requirements.txt without the ml/ training stack (torch, scikit-learn, lightgbm)
+# and the test tools. Versions come from requirements.txt through -c, so pins live
+# in one place. The Docker image installs requirements-api.lock (backend/spec.md).
+google-genai
+yfinance
+pandas
+numpy
+pydantic
+python-dotenv
+fastapi
+uvicorn
+httpx
+psycopg[binary]
+exchange_calendars

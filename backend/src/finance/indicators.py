@@ -58,12 +58,21 @@ def sma(close: pd.Series, window: int) -> float:
     return float(close.iloc[-window:].mean())
 
 
+def macd_series(
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> pd.DataFrame:
+    """MACD line, signal line and histogram at every bar (price units)."""
+    line = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
+    signal_line = line.ewm(span=signal, adjust=False).mean()
+    return pd.DataFrame({"macd": line, "signal": signal_line, "histogram": line - signal_line})
+
+
 def macd(
     close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
 ) -> dict[str, float]:
     """MACD line, signal line and histogram at the last two bars (price units)."""
-    line = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
-    histogram = line - line.ewm(span=signal, adjust=False).mean()
+    series = macd_series(close, fast, slow, signal)
+    line, histogram = series["macd"], series["histogram"]
     return {
         "macd": float(line.iloc[-1]),
         "histogram": float(histogram.iloc[-1]),
@@ -85,6 +94,17 @@ def atr(daily: pd.DataFrame, period: int = 14) -> float:
     return float(true_range.ewm(alpha=1 / period, adjust=False, min_periods=period).mean().iloc[-1])
 
 
+def volume_by_price(intraday: pd.DataFrame, bins: int = 24) -> tuple[np.ndarray, np.ndarray]:
+    """Bucket edges (`bins` + 1) and the volume traded in each bucket, by typical price."""
+    low, high = float(intraday["Low"].min()), float(intraday["High"].max())
+    if high <= low or intraday["Volume"].sum() == 0:
+        raise ValueError("no price range or no volume")
+    typical = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3
+    edges = np.linspace(low, high, bins + 1)
+    volume, _ = np.histogram(typical, bins=edges, weights=intraday["Volume"])
+    return edges, volume
+
+
 def volume_profile(
     intraday: pd.DataFrame, bins: int = 24, value_area: float = 0.7
 ) -> dict[str, float]:
@@ -94,12 +114,7 @@ def volume_profile(
     Yahoo's intraday volumes don't sum to real daily totals, but the relative
     distribution across prices is what matters here.
     """
-    low, high = float(intraday["Low"].min()), float(intraday["High"].max())
-    if high <= low or intraday["Volume"].sum() == 0:
-        raise ValueError("no price range or no volume")
-    typical = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3
-    edges = np.linspace(low, high, bins + 1)
-    volume, _ = np.histogram(typical, bins=edges, weights=intraday["Volume"])
+    edges, volume = volume_by_price(intraday, bins)
 
     lo = hi = int(np.argmax(volume))
     covered, target = volume[lo], value_area * volume.sum()
@@ -131,6 +146,15 @@ def vwap(session: pd.DataFrame) -> float:
     if volume == 0:
         raise ValueError("session has no volume")
     return float((typical * session["Volume"]).sum() / volume)
+
+
+def vwap_series(intraday: pd.DataFrame) -> pd.Series:
+    """Running VWAP at every bar, restarting each session (`NaN` until volume trades)."""
+    typical = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3
+    sessions = intraday.index.date
+    traded = (typical * intraday["Volume"]).groupby(sessions).cumsum()
+    volume = intraday["Volume"].groupby(sessions).cumsum()
+    return traded / volume.where(volume > 0)
 
 
 def total_return(close: pd.Series, days: int) -> float:

@@ -317,3 +317,94 @@ def test_score_lists_why_each_prediction_is_pending():
     assert report.scored == 1 and report.pending == 2
     assert [(p.prediction.ticker, p.reason) for p in report.pending_details] == [
         ("TEST", "horizon_open"), ("NODATA", "no_price_data")]
+
+
+# --- relative to SPY, stability, log rotation --------------------------------------
+
+
+def spy(entry: float, final: float) -> pd.Series:
+    """SPY closes: `entry` on the data date (10-09), `final` on the outcome date (10-16)."""
+    days = [d.date() for d in pd.bdate_range("2026-10-05", "2026-10-20")]
+    values = {d: entry for d in days}
+    values[date(2026, 10, 16)] = final
+    return pd.Series(values)
+
+
+def test_relative_outcome_compares_against_spy_over_the_same_sessions():
+    # The stock rose 5% while SPY rose 2%: up in absolute terms and relative to the market.
+    beat = make_prediction("up", 0.6)
+    # Up 3% while SPY rose 5%: up in absolute terms, but it lagged the market.
+    lagged = make_prediction("up", 0.6, ticker="LAG")
+    report = score([beat, lagged], {"TEST": closes(105.0), "LAG": closes(103.0), "SPY": spy(400.0, 420.0)},
+                   at("2026-10-20", 12))
+    first, second = report.outcomes
+    assert first.benchmark_return_pct == 5.0 and first.relative_return_pct == pytest.approx(0.0)
+    assert (first.actual, first.relative_actual) == ("up", "flat")
+    assert (second.actual, second.relative_actual) == ("up", "down")
+    assert report.accuracy["always_up"] == 1.0  # a rising market flatters always-up...
+    assert report.relative == {"benchmark": "SPY", "scored": 2,  # ...but not here
+                               "accuracy": {"personas": 0.0, "always_up": 0.0, "momentum": 0.5}}
+
+
+def test_relative_outcome_beats_the_market():
+    report = score([make_prediction("up", 0.6)], {"TEST": closes(105.0), "SPY": spy(400.0, 408.0)},
+                   at("2026-10-20", 12))
+    outcome = report.outcomes[0]
+    assert outcome.benchmark_return_pct == 2.0
+    assert outcome.relative_return_pct == pytest.approx(2.941, abs=0.001) and outcome.relative_actual == "up"
+
+
+def test_relative_outcome_needs_spy_on_both_dates_and_never_blocks_scoring():
+    report = score([make_prediction()], {"TEST": closes(105.0)}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.outcomes[0].relative_actual is None and report.relative == {}
+    gappy = spy(400.0, 408.0).drop(date(2026, 10, 9))
+    report = score([make_prediction()], {"TEST": closes(105.0), "SPY": gappy}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.relative == {}
+    # SPY against itself carries no information.
+    report = score([make_prediction(ticker="SPY")], {"SPY": closes(105.0)}, at("2026-10-20", 12))
+    assert report.outcomes[0].relative_actual is None
+
+
+def test_scoring_fetches_spy_too():
+    from ai.evaluation import scoring_tickers
+
+    assert scoring_tickers([make_prediction(ticker="AAPL")]) == {"AAPL", "SPY"}
+
+
+def test_score_breaks_calls_down_by_stability():
+    steady = make_prediction("up", 0.6, stability=0.9)
+    shaky = make_prediction("up", 0.6, stability=0.6, ticker="OTHER")
+    unclear = make_prediction("unclear", 0.0, stability=0.0, ticker="THIRD")
+    report = score([steady, shaky, unclear],
+                   {"TEST": closes(105.0), "OTHER": closes(95.0), "THIRD": closes(105.0)},
+                   at("2026-10-20", 12))
+    assert report.by_stability == {"0.00-0.50": (0, None), "0.50-0.75": (1, 0.0), "0.75-1.00": (1, 1.0)}
+
+
+def test_log_rotates_by_year_and_keeps_every_prediction(tmp_path):
+    from ai.evaluation import log_files, rotate_log
+
+    path = tmp_path / "predictions.jsonl"
+    old = make_prediction(generated_at=datetime(2025, 12, 31, 15, tzinfo=MARKET_TZ))
+    new = make_prediction(generated_at=datetime(2026, 1, 2, 15, tzinfo=MARKET_TZ))
+    log_prediction(old, path)
+    log_prediction(new, path, max_bytes=1)  # over the limit: rotate, then append
+    with path.open("a", encoding="utf-8") as f:
+        f.write("not json\n")
+    newest = make_prediction(generated_at=datetime(2026, 3, 2, 15, tzinfo=MARKET_TZ))
+    log_prediction(newest, path, max_bytes=1)
+    assert [p.name for p in log_files(path)] == ["predictions-2025.jsonl", "predictions-2026.jsonl",
+                                                 "predictions.jsonl"]
+    loaded, unreadable = load_log(path)
+    assert [p.id for p in loaded] == [old.id, new.id, newest.id] and unreadable == 1
+    assert path.read_text(encoding="utf-8").count("\n") == 1  # only the newest is live
+    assert rotate_log(path) == []  # under the default 100 MB: nothing to do
+
+
+def test_a_crash_mid_rotation_duplicates_instead_of_losing(tmp_path):
+    path = tmp_path / "predictions.jsonl"
+    p = make_prediction()
+    log_prediction(p, path)
+    (tmp_path / "predictions-2026.jsonl").write_text(p.model_dump_json() + "\n", encoding="utf-8")
+    loaded, _ = load_log(path)
+    assert [x.id for x in loaded] == [p.id]

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from ml.calibration import (
     call_rows,
     coverage_report,
     evaluate_calibration,
+    insider_buying_cluster,
+    persona_rank_spread,
 )
 from ml.dataset import CLASSES, DOWN, FLAT, UP, pooled_price_rows, price_rows, stacker_rows
 from ml.model import BoostedTreesModel, LogisticModel, MLPModel, PriorModel
@@ -389,3 +392,91 @@ def test_cli_reads_saved_forecasts_with_database(monkeypatch, capsys):
     assert "No predictions have resolved yet (2 pending)" in capsys.readouterr().out
     cli.main(["stacker", "--database"])
     assert "blocked, 0 scored predictions" in capsys.readouterr().out
+
+
+# --- relative target for model B, insider clusters, persona ranking ------------------
+
+
+def _with(outcome: Outcome, prediction_fields=None, **outcome_fields) -> Outcome:
+    prediction = outcome.prediction.model_copy(update=prediction_fields or {})
+    return replace(outcome, prediction=prediction, **outcome_fields)
+
+
+def test_stacker_rows_can_target_the_outcome_relative_to_spy():
+    views = {"long_term:25-39": [("default", _view("up", 0.9))]}
+    scored = _with(_outcome(date(2026, 1, 5), "up", views), return_pct=3.0,
+                   relative_return_pct=-1.5, relative_actual="down")
+    no_spy = _outcome(date(2026, 1, 6), "up", views)
+    absolute = stacker_rows([scored, no_spy])
+    assert [CLASSES[c] for c in absolute.y] == ["up", "up"] and absolute.target == "absolute"
+    relative = stacker_rows([scored, no_spy], target="relative")
+    assert len(relative) == 1 and CLASSES[relative.y[0]] == "down"
+    assert relative.forward_return[0] == pytest.approx(-0.015) and relative.target == "relative"
+    with pytest.raises(ValueError):
+        stacker_rows([scored], target="sideways")
+
+
+def test_relative_stacker_scores_baselines_on_the_relative_label():
+    outcomes = [_with(o, relative_actual="down" if o.actual == "up" else o.actual, relative_return_pct=0.0)
+                for o in _synthetic_outcomes(400)]
+    data = stacker_rows(outcomes, target="relative")
+    report = evaluate_stacker(data, ["logistic"], min_scored=300)
+    # Every "up" outcome is "down" relative to SPY here, so always-up never wins.
+    assert report.baselines["always_up"] == 0.0
+
+
+def _insiders(buys, net):
+    return {"long_term.insiders_last_6m.buy_transactions": buys,
+            "long_term.insiders_last_6m.net_shares": net}
+
+
+def test_insider_buying_cluster_needs_several_buys_and_net_buying():
+    base = _outcome(date(2026, 1, 5), "up", {"long_term:25-39": [("default", _view("up", 0.9))]}).prediction
+    assert insider_buying_cluster(base.model_copy(update={"features": _insiders(4, 1e5)})) is True
+    assert insider_buying_cluster(base.model_copy(update={"features": _insiders(2, 1e5)})) is False
+    assert insider_buying_cluster(base.model_copy(update={"features": _insiders(5, -1e5)})) is False
+    assert insider_buying_cluster(base.model_copy(update={"features": _insiders(None, None)})) is None
+    assert insider_buying_cluster(base) is None  # logged before features existed
+
+
+def test_coverage_report_splits_insider_clusters_and_skips_unknown():
+    views = {"long_term:25-39": [("default", _view("up", 0.9))]}
+    outcomes = [
+        _with(_outcome(date(2026, 1, 5), "up", views), {"features": _insiders(4, 1e5)}),
+        _with(_outcome(date(2026, 1, 6), "down", views), {"features": _insiders(1, -5e4)}),
+        _outcome(date(2026, 1, 7), "up", views),  # no insider data: in neither table
+    ]
+    tables = coverage_report(outcomes)
+    assert tables["insider buying cluster"][0].n == 1 and tables["insider buying cluster"][0].accuracy == 1.0
+    assert tables["no insider buying cluster"][0].n == 1
+
+
+def test_persona_rank_spread_goes_long_the_highest_net_scores():
+    day = date(2026, 1, 5)
+    outcomes = []
+    # Net scores +0.9, +0.5, 0, -0.5, -0.9: the most bullish call made the most money.
+    calls = [("up", 0.9, 4.0), ("up", 0.5, 2.0), ("flat", 0.5, 0.0), ("down", 0.5, -1.0), ("down", 0.9, -3.0)]
+    for k, (direction, conviction, ret) in enumerate(calls):
+        o = _outcome(day, "up", {"long_term:25-39": [("default", _view(direction, conviction))]},
+                     ticker=f"T{k}")
+        outcomes.append(_with(o, return_pct=ret))
+    spread = persona_rank_spread(outcomes)
+    assert spread["periods"] == 1 and spread["mean_tickers"] == 5
+    assert spread["mean_spread_pct"] == pytest.approx(4.0 - (-3.0)) and spread["positive_share"] == 1.0
+    assert persona_rank_spread(outcomes[:4]) is None  # fewer than 5 tickers that day
+
+
+def test_cli_coverage_prints_the_new_levers(monkeypatch, capsys):
+    from ai.evaluation import Report
+
+    outcomes = _synthetic_outcomes(60)
+    report = Report(scored=60, pending=0, unreadable=0, accuracy={}, coverage=None,
+                    accuracy_when_called=None, by_confidence={}, by_strategy={}, by_age_band={},
+                    outcomes=outcomes)
+    monkeypatch.setattr(cli, "score_log", lambda path: report)
+    cli.main(["coverage"])
+    out = capsys.readouterr().out
+    assert "insider buying cluster" in out and "no calls" in out  # these rows logged no insider data
+    assert "Persona ranking (lever 6): no day had 5 or more tickers" in out
+    cli.main(["stacker", "--target", "relative"])
+    assert "relative to SPY: blocked, 0 scored predictions" in capsys.readouterr().out

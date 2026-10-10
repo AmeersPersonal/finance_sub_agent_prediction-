@@ -11,10 +11,11 @@ from typing import Any
 import pandas as pd
 
 from ai.agents import DOC_QUERIES
-from ai.evaluation import MARKET_TZ, Report, derive_strategy_weights, fetch_closes, score
-from ai.live import YahooLiveFeed
+from ai.evaluation import (MARKET_TZ, Report, derive_strategy_weights, fetch_closes, score,
+                           scoring_tickers)
+from ai.live import live_feed_from_env
 from ai.main import predict
-from ai.llm import GeminiLLM
+from ai.llm import build_llm
 from ai.modes import ReasoningMode
 from ai.personas import Strategy, build_personas
 from ai.rag_retrieval import Snippet
@@ -220,13 +221,13 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
         ) for p in items] for strategy, items in passages.items()
     }
     owns_llm = llm is None
-    llm = llm or GeminiLLM()
+    llm = llm or build_llm()
     try:
         async with asyncio.timeout(PERSONA_TIMEOUT_SECONDS * max(1, len(modes or ()))):
             prediction = await predict(ticker, horizon_days=horizon_days, strategies=strategies,
                                        age_bands=age_bands, snapshot=snapshot, llm=llm,
                                        strategy_weights=strategy_weights, modes=modes,
-                                       live_feed=YahooLiveFeed() if live else None,
+                                       live_feed=live_feed_from_env() if live else None,
                                        documents_by_strategy=snippets, regression_daily=regression_daily)
             if audit:
                 prediction.audit = await audit_prediction(prediction, snapshot, llm)
@@ -295,7 +296,7 @@ def score_database() -> Report:
     with connect() as connection:
         predictions = DatabaseRepository(connection).load_predictions()
     closes = fetch_closes(
-        (p.ticker for p in predictions),
+        scoring_tickers(predictions),
         min(date.fromisoformat(p.data_as_of) for p in predictions),
     ) if predictions else {}
     report = score(predictions, closes, datetime.now(MARKET_TZ))

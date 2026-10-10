@@ -187,9 +187,21 @@ def stacker_rows(
     outcomes: Sequence[Outcome],
     columns: Sequence[str] | None = None,
     include_packet: bool = False,
+    target: str = "absolute",
 ) -> Dataset:
     """Model B rows. `columns` fixes the column order (a saved model's); by default
-    it's every column seen, sorted."""
+    it's every column seen, sorted.
+
+    `target="relative"` labels each row with the outcome relative to SPY
+    (`Outcome.relative_actual`, `ai.evaluation`) and drops outcomes scored
+    without SPY closes. The band is the prediction's own flat band, not one sized
+    from the relative series as in model A, since that history isn't logged.
+    """
+    if target not in ("absolute", "relative"):
+        raise ValueError(f"unknown target {target!r}; choose absolute or relative")
+    relative = target == "relative"
+    if relative:
+        outcomes = [o for o in outcomes if o.relative_actual is not None]
     rows = [stacker_features(o, include_packet) for o in outcomes]
     columns = tuple(columns) if columns is not None else tuple(sorted({k for r in rows for k in r}))
     X = np.array(
@@ -201,13 +213,16 @@ def stacker_rows(
     ).reshape(len(rows), len(columns))
     return Dataset(
         X=X,
-        y=np.array([CLASS_INDEX[o.actual] for o in outcomes], dtype=int),
+        y=np.array([CLASS_INDEX[o.relative_actual if relative else o.actual] for o in outcomes], dtype=int),
         dates=np.array([o.prediction.data_as_of for o in outcomes], dtype="datetime64[D]"),
         known_on=np.array([o.resolved_on for o in outcomes], dtype="datetime64[D]"),
         tickers=np.array([o.prediction.ticker for o in outcomes], dtype=object),
-        forward_return=np.array([o.return_pct / 100 for o in outcomes], dtype=float),
+        forward_return=np.array(
+            [(o.relative_return_pct if relative else o.return_pct) / 100 for o in outcomes], dtype=float
+        ),
         past_return=np.full(len(outcomes), np.nan),
         feature_names=columns,
         horizon_days=None,
+        target=target,
         outcomes=tuple(outcomes),
     ).take(np.argsort(np.array([o.prediction.data_as_of for o in outcomes]), kind="stable"))

@@ -21,6 +21,7 @@ its own `spec.md` with its open TODOs. Rules for AI coding agents:
 | [Online sources](src/sources/spec.md) | What documents are actually collected |
 | [Learned models](src/ml/spec.md) | Neural-network and stacker experiments |
 | [Cloud migration](src/database/docs/tiger-cloud-migration.md) | Explicit move to Tiger Cloud later |
+| [Retention and access](src/database/docs/retention-and-access.md) | What is kept, backups, source use, database roles |
 
 ## Setup
 
@@ -46,8 +47,27 @@ python main.py --score                 # accuracy vs baselines once horizons pas
 python main.py SPY --backtest          # the regression baseline alone, no LLM
 python -m ml price                     # learned price models vs always-up, walk-forward (src/ml/spec.md)
 uvicorn api.main:app --reload          # HTTP API (database-backed); docs at http://localhost:8000/docs
+python -m database.backup              # back up the database (pg_dump), keeping a bounded history
 pytest                                 # offline tests
 ```
+
+Creating forecasts through the API needs a Google sign-in. Without OAuth
+credentials, set `API_REQUIRE_SIGN_IN=false` in `.env` for local development.
+
+## Run with Docker
+
+From `backend/`, with `POSTGRES_PASSWORD` (letters and digits) and
+`GEMINI_API_KEY` in `.env`:
+
+```
+docker compose up --build              # PostgreSQL + migrations + API on http://localhost:8000
+docker compose down                    # stop; the database volume is kept (add -v to delete it)
+```
+
+The image (`Dockerfile`) installs `src/requirements-api.lock` only, so it has no
+PyTorch; run `python -m ml` from a normal install. CI
+(`.github/workflows/backend.yml`) runs the tests, including the PostgreSQL ones,
+and builds the image on every push that touches `backend/`.
 
 The local database is PostgreSQL (TimescaleDB optional). Retrieval is
 keyword-based RAG, not semantic vector search.

@@ -339,13 +339,18 @@ def evaluate_price_models(
 # --- model B: the persona stacker ------------------------------------------------
 
 
+def _label(data: Dataset, i: int) -> str:
+    """Row i's outcome as the dataset labels it: `Outcome.actual`, or the relative
+    outcome with `stacker_rows(target="relative")`."""
+    return CLASSES[data.y[i]]
+
+
 def _strategy_votes(data: Dataset, rows: np.ndarray) -> dict[str, list[bool]]:
     votes: dict[str, list[bool]] = defaultdict(list)
     for i in rows:
-        outcome = data.outcomes[i]
-        for r in outcome.prediction.personas:
+        for r in data.outcomes[i].prediction.personas:
             if r.view is not None:
-                votes[r.strategy].append(r.view.direction == outcome.actual)
+                votes[r.strategy].append(r.view.direction == _label(data, i))
     return votes
 
 
@@ -366,7 +371,7 @@ def weights_auto_proba(
             continue
         weights = derive_strategy_weights(_strategy_votes(data, block.train))
         train_calls = [_reweighted_call(data.outcomes[i], weights) for i in block.train]
-        hit = np.mean([c == data.outcomes[i].actual for c, i in zip(train_calls, block.train)])
+        hit = np.mean([c == _label(data, i) for c, i in zip(train_calls, block.train)])
         hit = float(np.clip(hit, 0.05, 0.95))
         prior = PriorModel().fit(data.X[block.train], data.y[block.train]).prior_
         for i in block.test:
@@ -396,7 +401,7 @@ class StackerReport:
 def _call_accuracy(data: Dataset, rows: np.ndarray, call: Callable) -> float | None:
     """Hit rate of `call(outcome)` over `rows`, skipping rows where it returns None.
     An "unclear" persona call counts as wrong, as in `ai.evaluation.score`."""
-    pairs = [(call(data.outcomes[i]), data.outcomes[i].actual) for i in rows]
+    pairs = [(call(data.outcomes[i]), _label(data, i)) for i in rows]
     hits = [c == actual for c, actual in pairs if c is not None]
     return float(np.mean(hits)) if hits else None
 

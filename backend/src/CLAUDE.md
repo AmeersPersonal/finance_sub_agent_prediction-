@@ -56,23 +56,23 @@ backend/
     ├── requirements.txt      # direct dependencies, pinned
     ├── requirements.lock     # every dependency, pinned with hashes (uv pip compile --universal)
     ├── api/
-    │   └── main.py           # the one FastAPI app: database-backed forecasts and reads, /score, OAuth
+    │   ├── main.py           # the one FastAPI app: forecasts (sign-in, rate limit, jobs), reads, /score, /me
+    │   └── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
     ├── ai/
     │   ├── main.py           # predict(): fetch -> live quote? -> sentiment -> personas -> aggregate
     │   ├── tool.py           # parallel fetching -> MarketSnapshot; clean_daily repairs Yahoo's last bar
-    │   ├── live.py           # Yahoo websocket live quote behind the same MarketSnapshot
+    │   ├── live.py           # live quote (Yahoo websocket, or Finnhub with LIVE_FEED) on the MarketSnapshot
     │   ├── feeds.py          # Yahoo Finance RSS news (with links), BLS inflation/jobs (cached)
     │   ├── sentiment.py      # one Gemini call scoring headlines -1..+1
     │   ├── agents.py         # horizon info, per-strategy packet, prompt; PROMPT_VERSION + changelog
     │   ├── personas.py       # strategies, age bands, eligibility rules
     │   ├── modes.py          # reasoning modes: model + temperature presets
-    │   ├── llm.py            # Gemini client (only file that talks to the provider)
+    │   ├── llm.py            # Gemini + an OpenAI-compatible second provider; build_llm (only file that talks to providers)
     │   ├── confidence_score.py  # strategy-balanced vote -> up/down/flat/unclear + strength
     │   ├── evaluation.py     # baselines, prediction log, split-aware scorer, derived weights
     │   ├── rag_retrieval.py  # keyword retrieval over ai/docs/ (.md/.txt)
     │   ├── features.py       # flattens the packets into Prediction.features (stacker training rows)
     │   ├── schemas.py        # PersonaView, PersonaResult, Prediction
-    │   ├── test.py           # empty; to be deleted
     │   └── docs/             # private documents, contents gitignored
     │       └── age_profiles/<band>.md   # optional sourced profile, overrides personas.py text
     ├── audit/                # explains a prediction: no new math
@@ -80,6 +80,12 @@ backend/
     │   ├── info.py           # company overview, data checks
     │   ├── risk.py           # decision risk checklist; learning_context for the dashboard
     │   └── media.py          # news TL;DRs (links from the feed, never the model); source_digest
+    ├── charts/               # chart-ready JSON for the frontend (price, forecast, score); pure
+    │   ├── base.py           # the one chart shape, JSON-safe numbers
+    │   ├── price.py          # candles + SMA, volume, RSI, MACD, drawdown; 5m: VWAP, volume profile
+    │   ├── prediction.py     # votes, conviction, strategy scores, flat band, baselines
+    │   ├── backtest.py       # regression equity curve vs buy and hold
+    │   └── score.py          # accuracy vs baselines, over time, by strategy/age/mode/strength
     ├── finance/
     │   ├── indicators.py     # RSI, MACD, ATR, VWAP, volume profile, beta, options, flat band
     │   ├── linear_regression.py  # OLS on price features, walk-forward validated: the baseline
@@ -97,8 +103,8 @@ backend/
     │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
     │   └── store.py          # save/load under data/models/ with a sidecar JSON
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
-    ├── database/             # migrations, repository, orchestration, setup/docs
-    ├── oauth/                # Google OIDC sign-in (code + PKCE), in-memory sessions
+    ├── database/             # migrations, repository, orchestration, backup.py, roles.sql, setup/docs
+    ├── oauth/                # Google OIDC sign-in (code + PKCE); sessions in memory or PostgreSQL
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
 
@@ -131,6 +137,7 @@ python -m ml price [--target relative]                # model A walk-forward + g
 python -m ml stacker                                  # model B; needs ~300 scored predictions
 python -m ml coverage                                 # accuracy at coverage, strength calibration
 uvicorn api.main:app --reload                         # HTTP API (database-backed), docs at /docs
+python -m database.backup                             # pg_dump + retention schedule (database/docs/retention-and-access.md)
 pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage
 ```
@@ -141,7 +148,11 @@ Environment variables: `GEMINI_API_KEY` (required for real predictions),
 operations, optional `SEC_USER_AGENT` for SEC filings and 8-K press releases,
 optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
 `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` plus the optional `OAUTH_*` settings in
-`.env.example`.
+`.env.example`. Forecast requests need sign-in unless `API_REQUIRE_SIGN_IN=false`;
+`API_PREDICTIONS_PER_HOUR` and `API_SCORE_CACHE_SECONDS` tune the API.
+Optional: `ALT_LLM_BASE_URL` / `ALT_LLM_MODEL` / `ALT_LLM_API_KEY` (a second,
+OpenAI-compatible model provider), `LIVE_FEED=finnhub` with `FINNHUB_API_KEY`,
+`OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose.
 
 ## Hard rules
 
@@ -171,9 +182,10 @@ optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
 - **Missing data degrades, it doesn't crash.** Fetches record failures in
   `MarketSnapshot.errors`, and metrics that can't be computed become `null`.
   Personas are told to lower conviction when their data is missing.
-- **Gemini calls go through `llm.py` only**, using `client.aio.models.generate_content`
-  with `response_json_schema`. Keep schemas simple; Gemini supports a subset of
-  JSON Schema.
+- **Model calls go through `llm.py` only**: Gemini via `client.aio.models.generate_content`
+  with `response_json_schema`, the second provider via the chat-completions
+  `response_format`. Keep schemas simple; Gemini supports a subset of JSON
+  Schema. Build clients with `build_llm()`, never `GeminiLLM()` directly.
 - Dependencies live in `src/requirements.txt`, pinned with `==`. Regenerate
   `src/requirements.lock` whenever it changes (command in `backend/spec.md`).
 - **Bump `PROMPT_VERSION` with a `PROMPT_CHANGELOG` entry** whenever prompts or
@@ -254,7 +266,8 @@ real application/contact identifier. Reddit was removed: its Responsible Builder
 Policy requires approval first and forbids sharing its data. Every document has a role
 (`company_info`, `public_opinion`, `product_event`) shown in the prompt, and
 retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
-retrieval and frontend wiring are not implemented. Record prompt changes in
+retrieval and frontend wiring are not implemented. Retention, backups, source
+use and database roles: `database/docs/retention-and-access.md`. Record prompt changes in
 `agents.PROMPT_CHANGELOG` (and `ai/spec.md`).
 
 `database/SETUP.md` describes the project-owned local PostgreSQL and API user

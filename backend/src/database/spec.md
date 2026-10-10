@@ -3,17 +3,19 @@
 ## TODOS
 
 - [ ] Connect to a private Tiger Cloud development service and run migrations;
-  offline verification does not validate cloud credentials.
+  offline verification does not validate cloud credentials. Blocked: needs the
+  team's Tiger account and credentials (`SETUP.md`, steps 1-3).
 - [x] Collect linked RSS excerpts and optional SEC primary filing text through `sources/`.
 - [x] Retrieve dated passages and save exactly what was provided, with cited-by metadata.
 - [ ] Add an embedding provider and vector index only after measuring retrieval
-  quality against the initial PostgreSQL full-text index.
+  quality against the initial PostgreSQL full-text index. Blocked: measuring it
+  needs relevance judgments on real retrieved passages.
 - [x] Add local dashboard HTTP routes in `api/`.
-- [ ] Add authenticated account integration before exposing preference data.
+- [x] Authenticated account integration: `/me/preferences` (`api/`) reads and writes `user_preferences` for the signed-in user only, keyed by provider and subject id (`get_user_preferences`, `save_user_preferences`, `delete_user_preferences`).
 - [x] Refresh corrected price bars from equally/newer fetches; skip unchanged or older data.
-- [ ] Archive historical price revisions if exact retrospective datasets are required.
-- [ ] Establish retention, source usage permissions, and deployment access roles
-  before storing a large document archive or real user preferences.
+- [x] Archive price revisions: migration 006 copies every corrected or deleted bar to `price_bar_revisions` (append-only); `get_price_history_as_of` and `model_data.load_daily_prices_as_known` rebuild prices exactly as known at any moment.
+- [x] Retention, source usage permissions and access roles: `docs/retention-and-access.md`, `backup.py` (pg_dump with a 7/4/12 schedule) and `roles.sql` (least-privilege `finance_api` writer and `finance_analyst` reader logins).
+- [x] Shared sign-in sessions for several API workers: migration 005 (`oauth_pending_logins`, `oauth_sessions`, hashes only), used with `OAUTH_SESSION_STORE=database`.
 
 ## Purpose
 
@@ -40,9 +42,14 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `migrations/002_timescale.sql` | Optional TimescaleDB extension and time partitioning for `price_bars` |
 | `migrations/003_dataset.sql` | Immutable per-forecast regression datasets (`model_datasets`) |
 | `migrations/004_evaluations_immutable.sql` | Append-only trigger for `evaluations` |
+| `migrations/005_oauth_sessions.sql` | Shared OAuth pending logins and sessions (hashed ids), for `OAUTH_SESSION_STORE=database` |
+| `migrations/006_price_bar_revisions.sql` | Append-only archive of every price-bar version a refresh overwrote or a delete removed |
+| `backup.py` | `python -m database.backup`: pg_dump to `backend/data/backups/`, prune by the retention schedule |
+| `roles.sql` | Least-privilege group and login roles; an administrator runs it with psql after migrations |
 | `SETUP.md` | Cloud connection, private environment configuration, and CLI commands |
 | `local_postgres.sh` | Initialize and manage a separate persistent local PostgreSQL cluster in gitignored `backend/data/` |
 | `docs/README.md` | Short beginner guides to the schema, data flow, and future Tiger Cloud migration |
+| `docs/retention-and-access.md` | What is kept and for how long, backups, source-use rules, database roles |
 
 ## Tables
 
@@ -58,7 +65,9 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `prediction_outputs` | Individual persona answers, aggregate direction, regression, and other baselines |
 | `prediction_evidence` | Exact supplied excerpts, source/chunk links, strategy, and cited-by metadata |
 | `evaluations` | Later observed price/return/direction, data basis, and evaluation payload |
-| `user_preferences` | External account reference, adult age band, strategy, experience, and optional preferences; no credentials |
+| `user_preferences` | External account reference, adult age band, strategy, experience, and optional preferences; no credentials. Written only through `/me/preferences` |
+| `price_bar_revisions` | Superseded price-bar versions with when they were fetched and superseded (append-only) |
+| `oauth_pending_logins`, `oauth_sessions` | Shared sign-in state for several API workers; SHA-256 hashes of state values and session ids |
 
 The migration runner tracks applied migrations separately. Foreign keys connect
 records, and composite keys prevent evidence from attaching a chunk to the
@@ -125,8 +134,10 @@ endpoint's 500-row default. It selects one provider/adjustment basis, checks
 market-session dates and finite numeric values, and records dataset metadata
 and a fingerprint in `Prediction.input_snapshot.regression_dataset`.
 
-`price_bars` still holds latest corrected values, not a revision archive; the
-standalone `model_data` loader reads those. Forecast reproducibility comes from
+`price_bars` holds the latest corrected values; since migration 006 every
+superseded version is kept in `price_bar_revisions`. The standalone
+`load_daily_prices` reads the latest values fetched by its cutoff;
+`load_daily_prices_as_known` rebuilds the bars exactly as known at a moment. Forecast reproducibility comes from
 `model_datasets`, whose sha256 is verified on load.
 Online refresh is still required by the full persona workflow. Numerical models
 can use the standalone loader without refresh or Gemini.

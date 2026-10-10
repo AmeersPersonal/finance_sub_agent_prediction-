@@ -6,36 +6,63 @@ Credentials and database queries stay on the backend. Forecasts go through
 `database.service.predict_and_store`, so every prediction is stored with its
 evidence; there is no JSONL path here. The Gemini client is a dependency
 (`get_llm`), so tests swap in a fake.
+
+Creating a forecast spends model quota, so it needs a signed-in user
+(`API_REQUIRE_SIGN_IN=false` turns that off for local development) and is
+rate-limited per caller (`API_PREDICTIONS_PER_HOUR`). Rate limits, background
+jobs and the score cache are in-process (`api/state.py`): run one worker.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from ai.llm import GeminiLLM, JsonLLM
+from ai.live import live_feed_from_env
+from ai.llm import JsonLLM, build_llm
 from ai.modes import resolve_modes
 from ai.personas import Strategy
+from api.state import JobStore, RateLimiter, ScoreCache
+from charts import backtest_charts, prediction_charts, price_charts, score_charts
 from database.connection import DatabaseError, connect
 from database.repository import DatabaseRepository
+from oauth.provider import OAuthSettings
+from oauth.routes import current_user, get_settings, get_store
 from oauth.routes import router as oauth_router
+from oauth.sessions import SessionStore
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 AgeBand = Literal["18-24", "25-39", "40-54", "55-65"]
 PriceInterval = Literal["1d", "5m"]
 ADULT_BANDS = ["18-24", "25-39", "40-54", "55-65"]
+MAX_PREFERENCES_BYTES = 4096
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+prediction_limiter = RateLimiter(_int_env("API_PREDICTIONS_PER_HOUR", 10), window=3600)
+jobs = JobStore()
+score_cache = ScoreCache(_int_env("API_SCORE_CACHE_SECONDS", 300))
 
 
 def normalize_ticker(value: str) -> str:
@@ -118,8 +145,8 @@ async def _service(method: str, *args, **kwargs):
 
 
 @lru_cache(maxsize=1)
-def _gemini() -> GeminiLLM:
-    return GeminiLLM()  # one client, so its concurrency cap and backoff cover every request
+def _gemini() -> JsonLLM:
+    return build_llm()  # one client, so its concurrency cap and backoff cover every request
 
 
 def get_llm() -> JsonLLM:
@@ -129,13 +156,50 @@ def get_llm() -> JsonLLM:
         raise HTTPException(status_code=503, detail="Prediction model is not configured (GEMINI_API_KEY).") from None
 
 
+def sign_in_required() -> bool:
+    """Read on every request, so the setting can change without a code change."""
+    return (os.environ.get("API_REQUIRE_SIGN_IN") or "true").strip().lower() not in {"false", "0", "no"}
+
+
+def prediction_caller(request: Request, store: SessionStore = Depends(get_store)) -> str:
+    """Who is spending model quota: the signed-in user, or with sign-in turned off,
+    the client address. Raises 401 when sign-in is required and missing."""
+    if sign_in_required():
+        return "user:" + current_user(request, store)["sub"]
+    return "client:" + (request.client.host if request.client else "unknown")
+
+
+def _spend_quota(caller: str) -> None:
+    wait = prediction_limiter.acquire(caller)
+    if wait is not None:
+        raise HTTPException(
+            status_code=429, headers={"Retry-After": str(math.ceil(wait))},
+            detail=f"Forecast limit reached ({prediction_limiter.limit} an hour). "
+                   f"Try again in {math.ceil(wait / 60)} min.",
+        )
+
+
+def _prediction_kwargs(body: PredictionRequest, llm: JsonLLM) -> dict[str, Any]:
+    if body.live:
+        try:
+            live_feed_from_env()  # fail now, not after spending quota, if the feed isn't configured
+        except (RuntimeError, ValueError):
+            raise HTTPException(status_code=503, detail="The live price feed is not configured (LIVE_FEED).") from None
+    weights = body.strategy_weights
+    if isinstance(weights, dict):
+        weights = {s.value: w for s, w in weights.items()}
+    return dict(horizon_days=body.horizon_days, strategies=body.strategies, age_bands=body.age_bands,
+                llm=llm, strategy_weights=weights, modes=resolve_modes(body.modes),
+                live=body.live, audit=body.audit)
+
+
 app = FastAPI(title="Finance learning dashboard", version="0.2.0")
 origins = os.environ.get("API_CORS_ORIGINS") or "http://localhost:5173,http://localhost:3000"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in origins.split(",") if origin.strip()],
     allow_credentials=True,  # the OAuth session cookie; origins are an explicit list, never "*"
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type"],
 )
 app.include_router(oauth_router)
@@ -175,14 +239,33 @@ async def refresh(ticker: str):
 
 
 @app.post("/predictions", status_code=201)
-async def predict(body: PredictionRequest, llm: JsonLLM = Depends(get_llm)):
-    weights = body.strategy_weights
-    if isinstance(weights, dict):
-        weights = {s.value: w for s, w in weights.items()}
-    return await _service("predict_and_store", body.ticker, horizon_days=body.horizon_days,
-                          strategies=body.strategies, age_bands=body.age_bands, llm=llm,
-                          strategy_weights=weights, modes=resolve_modes(body.modes),
-                          live=body.live, audit=body.audit)
+async def predict(body: PredictionRequest, llm: JsonLLM = Depends(get_llm),
+                  caller: str = Depends(prediction_caller)):
+    """Generate and store a forecast, holding the request open for the whole run
+    (10-60 s). `POST /prediction-jobs` returns at once instead."""
+    kwargs = _prediction_kwargs(body, llm)
+    _spend_quota(caller)
+    return await _service("predict_and_store", body.ticker, **kwargs)
+
+
+@app.post("/prediction-jobs", status_code=202)
+async def create_prediction_job(body: PredictionRequest, llm: JsonLLM = Depends(get_llm),
+                                caller: str = Depends(prediction_caller)):
+    """Start a forecast in the background; poll `GET /prediction-jobs/{job_id}`."""
+    kwargs = _prediction_kwargs(body, llm)
+    _spend_quota(caller)
+    job = jobs.submit(caller, lambda: _service("predict_and_store", body.ticker, **kwargs))
+    return {**job.view(), "poll": f"/prediction-jobs/{job.id}"}
+
+
+@app.get("/prediction-jobs/{job_id}")
+async def prediction_job(job_id: str, caller: str = Depends(prediction_caller)):
+    """`status`: queued, running, succeeded (with `prediction`) or failed (with `error`).
+    Only the caller who started a job can see it; finished jobs are kept for an hour."""
+    job = jobs.get(job_id, caller)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found (or it finished over an hour ago).")
+    return job.view()
 
 
 def _report_json(report) -> dict[str, Any]:
@@ -190,6 +273,8 @@ def _report_json(report) -> dict[str, Any]:
         "scored": report.scored, "pending": report.pending, "accuracy": report.accuracy,
         "coverage": report.coverage, "accuracy_when_called": report.accuracy_when_called,
         "by_confidence": {k: {"n": n, "accuracy": a} for k, (n, a) in report.by_confidence.items()},
+        "by_stability": {k: {"n": n, "accuracy": a} for k, (n, a) in report.by_stability.items()},
+        "relative": report.relative,
         "by_strategy": report.by_strategy, "by_age_band": report.by_age_band,
         "by_mode": report.by_mode, "by_model": report.by_model,
         "strategy_weights": report.strategy_weights,
@@ -202,21 +287,55 @@ def _report_json(report) -> dict[str, Any]:
     }
 
 
-@app.get("/score")
-async def score():
-    """Accuracy of saved forecasts vs the baselines (`python main.py --score --database`).
-
-    Fetches closes and appends any newly available outcomes (idempotent), then
-    reports why each remaining forecast is still pending.
-    """
+async def _score_report(fresh: bool = False):
+    """The score report and when it was computed, from `score_cache` unless `fresh`."""
+    from database import service
     try:
-        from database import service
-        report = await asyncio.to_thread(service.score_database)
+        return await asyncio.to_thread(score_cache.get, lambda: service.score_database(), fresh)
     except DatabaseError:
         raise
     except Exception:
         raise HTTPException(status_code=502, detail="Price provider unavailable. Try again later.") from None
-    return _report_json(report)
+
+
+@app.get("/score")
+async def score(refresh: bool = False):
+    """Accuracy of saved forecasts vs the baselines (`python main.py --score --database`).
+
+    Fetches closes and appends any newly available outcomes (idempotent), then
+    reports why each remaining forecast is still pending. The report is cached
+    for `API_SCORE_CACHE_SECONDS` (default 5 min); `?refresh=true` recomputes it.
+    """
+    report, computed_at = await _score_report(refresh)
+    return {**_report_json(report), "computed_at": computed_at.isoformat()}
+
+
+@app.get("/score/charts")
+async def score_chart_data(refresh: bool = False):
+    """The `/score` report as chart-ready series (`charts/base.py` for the shape)."""
+    report, computed_at = await _score_report(refresh)
+    return {"charts": score_charts(_report_json(report), report.outcomes),
+            "computed_at": computed_at.isoformat()}
+
+
+@app.get("/stocks/{ticker}/charts")
+async def price_chart_data(ticker: str, interval: PriceInterval = "1d",
+                           limit: Annotated[int, Query(ge=2, le=2000)] = 250):
+    """Candles, moving averages, volume, RSI, MACD and drawdown from saved bars; `5m`
+    bars add the session VWAP and a volume profile."""
+    ticker = _ticker(ticker)
+    bars = await asyncio.to_thread(_read, "get_price_history", ticker, interval=interval, limit=limit)
+    return {"ticker": ticker, "interval": interval, "charts": price_charts(bars, ticker, interval)}
+
+
+@app.get("/stocks/{ticker}/charts/backtest")
+async def backtest_chart_data(ticker: str, horizon_days: Annotated[int, Query(ge=1, le=252)] = 5):
+    """Walk-forward regression vs buy and hold from the saved daily bars. Empty
+    `charts` when fewer than about 1.5 years of bars are saved (refresh the ticker)."""
+    ticker = _ticker(ticker)
+    bars = await asyncio.to_thread(_read, "get_price_history", ticker, interval="1d", limit=2000)
+    charts = await asyncio.to_thread(backtest_charts, bars, ticker, horizon_days)
+    return {"ticker": ticker, "horizon_days": horizon_days, "charts": charts}
 
 
 @app.get("/predictions")
@@ -238,6 +357,13 @@ async def prediction(prediction_id: str):
     return await _get_prediction(prediction_id)
 
 
+@app.get("/predictions/{prediction_id}/charts")
+async def prediction_chart_data(prediction_id: str):
+    """Votes, conviction, strategy scores, flat band and baselines for one forecast."""
+    found = await _get_prediction(prediction_id)
+    return {"prediction_id": prediction_id, "charts": prediction_charts(found)}
+
+
 @app.get("/predictions/{prediction_id}/evaluation")
 async def evaluation(prediction_id: str):
     await _get_prediction(prediction_id)
@@ -248,4 +374,59 @@ async def evaluation(prediction_id: str):
 @app.post("/predictions/{prediction_id}/evaluate")
 async def evaluate(prediction_id: str):
     await _get_prediction(prediction_id)
-    return await _service("evaluate_prediction", prediction_id)
+    result = await _service("evaluate_prediction", prediction_id)
+    score_cache.clear()  # a new outcome may have been saved
+    return result
+
+
+# --- Signed-in account preferences ------------------------------------------------
+
+
+class PreferencesRequest(BaseModel):
+    """What a signed-in user tells the dashboard about themselves. Adult bands only,
+    as for forecasts; nothing here is a suitability assessment."""
+
+    age_band: AgeBand | None = None
+    strategy: Strategy | None = None
+    experience_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    preferences: dict[str, Any] = Field(default_factory=dict, description="Free-form UI settings, up to 4 KB")
+
+    @field_validator("preferences")
+    @classmethod
+    def small(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value)) > MAX_PREFERENCES_BYTES:
+            raise ValueError(f"Preferences must be at most {MAX_PREFERENCES_BYTES} bytes of JSON.")
+        return value
+
+
+def account_reference(user: dict[str, Any], settings: OAuthSettings) -> str:
+    """The provider's stable subject id, namespaced by provider host. Never the email,
+    which can change hands."""
+    return f"{urlsplit(settings.userinfo_url).hostname}:{user['sub']}"
+
+
+def _account(user: dict[str, Any] = Depends(current_user),
+             settings: OAuthSettings = Depends(get_settings)) -> str:
+    return account_reference(user, settings)
+
+
+@app.get("/me/preferences")
+async def read_preferences(account: str = Depends(_account)):
+    """The signed-in user's saved preferences, or `null` before they save any."""
+    return {"preferences": await asyncio.to_thread(_read, "get_user_preferences", account)}
+
+
+@app.put("/me/preferences")
+async def save_preferences(body: PreferencesRequest, account: str = Depends(_account)):
+    saved = await asyncio.to_thread(
+        _read, "save_user_preferences", account, age_band=body.age_band,
+        strategy=body.strategy.value if body.strategy else None,
+        experience_level=body.experience_level, preferences=body.preferences,
+    )
+    return {"preferences": saved}
+
+
+@app.delete("/me/preferences")
+async def delete_preferences(account: str = Depends(_account)):
+    """Forget the signed-in user's preferences."""
+    return {"deleted": await asyncio.to_thread(_read, "delete_user_preferences", account)}

@@ -9,6 +9,7 @@ location; TimescaleDB is an optional PostgreSQL extension for price history.
 | [How it works](how-it-works.md) | How does Python send, save, and read information? |
 | [Model data loader](model-data.md) | How do saved prices reach the regression or a future neural network? |
 | [Moving to Tiger Cloud](tiger-cloud-migration.md) | What must happen before the cloud database replaces the local one? |
+| [Retention, backups and access](retention-and-access.md) | What do we keep, how is it backed up, and who can read or change it? |
 | [Setup instructions](../SETUP.md) | What connection settings and commands do I use? |
 
 ## Where we are now
@@ -24,7 +25,8 @@ location; TimescaleDB is an optional PostgreSQL extension for price history.
 
 The private connection is in `backend/.env`. Database files live in
 `backend/data/postgres/`. Both are ignored by Git. A persistent database survives
-restarts, but still needs backups for protection against disk loss.
+restarts, but still needs backups for protection against disk loss:
+`python -m database.backup` ([retention-and-access.md](retention-and-access.md)).
 
 Neither fixing Tiger Console login nor changing `DATABASE_URL` copies data.
 Cloud migration is an explicit step described in the migration guide.

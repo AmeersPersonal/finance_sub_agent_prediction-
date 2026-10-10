@@ -28,12 +28,12 @@ stacker ~43-48%; realistic ceiling ~47-50%. Anything far above that is leakage.
 - [x] Walk-forward evaluation with a purge gap (`walkforward.py`), reported against always-up, momentum and the linear regression, plus `--weights auto` for B.
 - [ ] Integration, only for a model that passed its gate (see Integration). None has.
 - [x] Added `ml/` to the layout tables in `src/spec.md` and `src/CLAUDE.md`, pinned `scikit-learn` and `lightgbm`, and regenerated `requirements.lock`.
-- [ ] Re-run `python -m ml price` and `--target relative` each quarter. The current test window is one year (2025-10 to 2026-10) of a rising market (equal-weight buy-and-hold +25%), so it covers a single regime.
-- [ ] Relative target for model B and the scorer. This needs SPY closes at resolution time, in `ai/evaluation.resolve`.
-- [ ] Lever 5, second half: split out calls with insider-buying clusters inside the horizon (`long_term.insiders.*` in `Prediction.features`).
-- [ ] Lever 6 for the personas: rank tickers predicted on the same day. This needs Phase 1 runs over many tickers per day.
-- [ ] Only if a model passes the model A gate: re-test it with whole tickers held out of training, the stricter reading of "held-out tickers".
-- [ ] A FinBERT-style per-headline score, tried as a *feature*, not as a predictor.
+- [ ] Re-run `python -m ml price` and `--target relative` each quarter. The current test window is one year (2025-10 to 2026-10) of a rising market (equal-weight buy-and-hold +25%), so it covers a single regime. Next due 2027-01.
+- [x] Relative target for model B and the scorer: scoring fetches SPY too, and each `Outcome` carries the return relative to SPY over the same sessions, classified with the prediction's flat band (`relative_actual`; `Report.relative`). `python -m ml stacker --target relative` trains and scores model B on it; its baselines are scored on the same relative label. The band is the stock's own, not one sized from the relative series as in model A, since that history isn't logged.
+- [x] Lever 5, second half: `python -m ml coverage` splits calls made during an insider-buying cluster (`calibration.insider_buying_cluster`: at least 3 purchases and net buying over yfinance's trailing 6 months, from `long_term.insiders_last_6m.*`; Yahoo gives no dates, so "inside the horizon" isn't available). Forecasts without insider data fall in neither table.
+- [x] Lever 6 for the personas: `calibration.persona_rank_spread`, printed by `python -m ml coverage`: on each day with 5+ tickers predicted at one horizon, long the top fifth by net score, short the bottom fifth. Results need Phase 1 runs over many tickers per day.
+- [ ] Only if a model passes the model A gate: re-test it with whole tickers held out of training, the stricter reading of "held-out tickers". Not started on purpose: none has passed.
+- [ ] A FinBERT-style per-headline score, tried as a *feature*, not as a predictor. Blocked on data like model B: headlines can't be backfilled, so the feature can only be judged on scored live forecasts (and it adds `transformers` plus a model download).
 
 ## Notes from the database merge (2026-10-10)
 

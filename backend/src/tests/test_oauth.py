@@ -1,5 +1,6 @@
 """OAuth routes against a fake provider: no network, no real credentials."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from oauth import routes
-from oauth.provider import OAuthSettings, pkce_challenge
-from oauth.sessions import MemoryStore
+from oauth.provider import HttpProvider, OAuthSettings, pkce_challenge
+from oauth.sessions import MemoryStore, store_from_env
 
 SETTINGS = OAuthSettings(
     client_id="client-id",
@@ -180,3 +181,52 @@ def test_settings_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("OAUTH_COOKIE_SECURE", "false")
     configured = OAuthSettings.from_env()
     assert configured.configured and not configured.cookie_secure
+
+
+# --- HttpProvider against recorded responses (MockTransport, no network) ----------
+
+
+def recorded_provider(responses):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        status, body = responses[str(request.url).split("?")[0]]
+        return httpx.Response(status, json=body)
+
+    settings = OAuthSettings(client_id="client-id", client_secret="client-secret",
+                             token_url="https://idp.example/token", userinfo_url="https://idp.example/userinfo")
+    return HttpProvider(settings, transport=httpx.MockTransport(handle)), requests
+
+
+def test_http_provider_exchanges_the_code_with_the_pkce_verifier():
+    provider, requests = recorded_provider({
+        "https://idp.example/token": (200, {"access_token": "access-token", "token_type": "Bearer"}),
+        "https://idp.example/userinfo": (200, {"sub": "user-1", "email": "user@example.com"}),
+    })
+    tokens = asyncio.run(provider.exchange_code("the-code", "the-verifier"))
+    profile = asyncio.run(provider.userinfo(tokens["access_token"]))
+    assert profile["sub"] == "user-1"
+    form = {k: v[0] for k, v in parse_qs(requests[0].content.decode()).items()}
+    assert requests[0].method == "POST" and form == {
+        "grant_type": "authorization_code", "code": "the-code", "code_verifier": "the-verifier",
+        "redirect_uri": "http://localhost:8000/oauth/callback",
+        "client_id": "client-id", "client_secret": "client-secret",
+    }
+    assert requests[1].headers["authorization"] == "Bearer access-token"
+
+
+def test_http_provider_raises_on_provider_errors():
+    provider, _ = recorded_provider({"https://idp.example/token": (400, {"error": "invalid_grant"})})
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(provider.exchange_code("expired-code", "verifier"))
+
+
+def test_session_store_is_chosen_by_environment(monkeypatch):
+    monkeypatch.delenv("OAUTH_SESSION_STORE", raising=False)
+    assert isinstance(store_from_env(), MemoryStore)
+    monkeypatch.setenv("OAUTH_SESSION_STORE", "database")
+    assert type(store_from_env()).__name__ == "DatabaseStore"  # connects lazily, on first use
+    monkeypatch.setenv("OAUTH_SESSION_STORE", "files")
+    with pytest.raises(RuntimeError, match="OAUTH_SESSION_STORE"):
+        store_from_env()

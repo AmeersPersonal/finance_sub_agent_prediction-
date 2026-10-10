@@ -74,12 +74,16 @@ class Provider(Protocol):
 
 
 class HttpProvider:
-    def __init__(self, settings: OAuthSettings) -> None:
+    def __init__(self, settings: OAuthSettings, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._settings = settings
+        self._transport = transport  # tests pass an httpx.MockTransport
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=TIMEOUT_SECONDS, transport=self._transport)
 
     async def exchange_code(self, code: str, verifier: str) -> dict[str, Any]:
         s = self._settings
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        async with self._client() as client:
             response = await client.post(
                 s.token_url,
                 data={
@@ -95,7 +99,7 @@ class HttpProvider:
         return response.json()
 
     async def userinfo(self, access_token: str) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        async with self._client() as client:
             response = await client.get(
                 self._settings.userinfo_url, headers={"Authorization": f"Bearer {access_token}"}
             )

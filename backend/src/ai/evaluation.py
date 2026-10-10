@@ -20,10 +20,19 @@ horizon skips or which session has no price yet.
 
 The scorer also suggests strategy weights from each strategy's scored votes;
 `python main.py AAPL --weights auto` feeds them back into `predict()`.
+
+Relative outcome: when SPY closes are supplied, each outcome also records the
+stock's return relative to SPY over the same sessions, classified with the
+prediction's own flat band (`Report.relative`). Always-up can't ride a rising
+market there, so it shows whether a call carries stock-specific information.
+
+The log rotates by year once it passes `ROTATE_BYTES` (`predictions-2026.jsonl`);
+`load_log` reads the live file and every archive, so no scored history is lost.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from collections import defaultdict
@@ -46,6 +55,9 @@ DEFAULT_LOG = Path(__file__).resolve().parents[2] / "data" / "predictions.jsonl"
 MARKET_TZ = ZoneInfo("America/New_York")
 CLOSE_IS_FINAL = time(16, 30)  # daily bars are settled a little after the 16:00 close
 CONFIDENCE_BUCKETS = ((0.0, 0.25), (0.25, 0.5), (0.5, 1.01))
+STABILITY_BUCKETS = ((0.0, 0.5), (0.5, 0.75), (0.75, 1.01))
+BENCHMARK = "SPY"  # the relative outcome's reference, as in ml's relative target
+ROTATE_BYTES = 100 * 1024 * 1024
 # Pseudo-votes at the pooled hit rate added to each strategy before weighting it,
 # so a strategy needs a few dozen scored votes before its weight moves far from 1.
 PRIOR_VOTES = 30
@@ -67,24 +79,74 @@ def baselines(
     return calls
 
 
-def log_prediction(prediction: Prediction, path: Path = DEFAULT_LOG) -> None:
+def log_files(path: Path = DEFAULT_LOG) -> list[Path]:
+    """The yearly archives (`predictions-2026.jsonl`), oldest first, then the live log."""
+    archives = sorted(path.parent.glob(f"{path.stem}-[0-9][0-9][0-9][0-9]{path.suffix}"))
+    return [*archives, path]
+
+
+def _line_year(line: str, fallback: int) -> int:
+    try:
+        year = str(json.loads(line).get("generated_at", ""))[:4]
+    except (ValueError, AttributeError):
+        return fallback
+    return int(year) if year.isdigit() else fallback
+
+
+def rotate_log(path: Path = DEFAULT_LOG, max_bytes: int = ROTATE_BYTES) -> list[Path]:
+    """Move the live log into yearly archives once it passes `max_bytes`.
+
+    Each line goes to `<stem>-<year of generated_at>.jsonl` (appended, so a busy
+    year can rotate more than once); unreadable lines go to this year's archive
+    rather than being dropped. Archives are written before the live log is
+    emptied, so a crash in between duplicates lines, which `load_log` skips by
+    prediction id, instead of losing them. Returns the archives written to.
+    """
+    if not path.exists() or path.stat().st_size <= max_bytes:
+        return []
+    this_year = datetime.now(MARKET_TZ).year
+    by_year: dict[int, list[str]] = defaultdict(list)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            by_year[_line_year(line, this_year)].append(line)
+    written = []
+    for year, lines in sorted(by_year.items()):
+        archive = path.with_name(f"{path.stem}-{year}{path.suffix}")
+        with archive.open("a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        written.append(archive)
+    path.write_text("", encoding="utf-8")
+    log.info("rotated %s into %s", path.name, ", ".join(a.name for a in written))
+    return written
+
+
+def log_prediction(prediction: Prediction, path: Path = DEFAULT_LOG,
+                   max_bytes: int = ROTATE_BYTES) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _log_lock, path.open("a", encoding="utf-8") as f:
-        f.write(prediction.model_dump_json() + "\n")
+    with _log_lock:
+        rotate_log(path, max_bytes)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(prediction.model_dump_json() + "\n")
 
 
 def load_log(path: Path = DEFAULT_LOG) -> tuple[list[Prediction], int]:
-    """Logged predictions, plus a count of lines that no longer parse."""
-    if not path.exists():
-        return [], 0
-    predictions, unreadable = [], 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+    """Logged predictions from the live log and its yearly archives, plus a count of
+    lines that no longer parse. A prediction id seen twice is kept once."""
+    predictions, unreadable, seen = [], 0, set()
+    for file in log_files(path):
+        if not file.exists():
             continue
-        try:
-            predictions.append(Prediction.model_validate_json(line))
-        except ValidationError:
-            unreadable += 1
+        for line in file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                prediction = Prediction.model_validate_json(line)
+            except ValidationError:
+                unreadable += 1
+                continue
+            if prediction.id not in seen:
+                seen.add(prediction.id)
+                predictions.append(prediction)
     return predictions, unreadable
 
 
@@ -98,6 +160,10 @@ class Outcome:
     price_basis: str = "prediction_share_basis"
     reference_price: float | None = None
     split_factor: float = 1.0  # provider close x split_factor = price in the logged share basis
+    # Relative to BENCHMARK over the same sessions; None without benchmark closes.
+    benchmark_return_pct: float | None = None
+    relative_return_pct: float | None = None
+    relative_actual: Direction | None = None  # classified with the prediction's flat band
 
 
 @dataclass(frozen=True)
@@ -133,11 +199,27 @@ def _closures(calendar, session: pd.Timestamp, target: pd.Timestamp) -> str:
     return f" The NYSE calendar accounts for: {'; '.join(notes)}." if notes else ""
 
 
-def assess(prediction: Prediction, closes: pd.Series | None, now: datetime) -> Outcome | Pending:
+def _benchmark_return(benchmark: pd.Series | None, start: date, end: date) -> float | None:
+    """Return between two closes of one series. Both share its split adjustment, so
+    the ratio is right without restating anything."""
+    if benchmark is None or not benchmark.index.is_unique:
+        return None
+    if start not in benchmark.index or end not in benchmark.index:
+        return None
+    first, last = float(benchmark.loc[start]), float(benchmark.loc[end])
+    if not (math.isfinite(first) and math.isfinite(last)) or first <= 0 or last <= 0:
+        return None
+    return last / first - 1
+
+
+def assess(prediction: Prediction, closes: pd.Series | None, now: datetime,
+           benchmark: pd.Series | None = None) -> Outcome | Pending:
     """Score one prediction on its exact exchange session, or say why it can't be yet.
 
     Injected plain Series are assumed to already use the prediction share basis.
     Provider Series must declare their basis and complete corporate actions.
+    `benchmark` (BENCHMARK closes) adds the relative outcome when it has both the
+    data date and the outcome date; it never makes a prediction pending.
     """
     def pending(reason: str, detail: str, retry_after: datetime | None = None) -> Pending:
         if reason != "horizon_open":
@@ -218,14 +300,24 @@ def assess(prediction: Prediction, closes: pd.Series | None, now: datetime) -> O
     ret = price / prediction.last_price - 1
     if not math.isfinite(ret):
         return pending("invalid_price", "The adjusted return isn't a finite number.")
+    band = prediction.flat_band_pct / 100
+    relative = {}
+    # The benchmark relative to itself is always zero: no information.
+    bench = None if prediction.ticker == BENCHMARK else _benchmark_return(benchmark, start, resolved_on)
+    if bench is not None:
+        excess = (1 + ret) / (1 + bench) - 1  # the return of price / benchmark, as in ml's relative target
+        relative = dict(benchmark_return_pct=round(bench * 100, 3),
+                        relative_return_pct=round(excess * 100, 3),
+                        relative_actual=classify_move(excess, band))
     return Outcome(
         prediction=prediction,
         resolved_on=resolved_on,
         return_pct=round(ret * 100, 3),
-        actual=classify_move(ret, prediction.flat_band_pct / 100),
+        actual=classify_move(ret, band),
         actual_price=price,
         reference_price=prediction.last_price,
         split_factor=split_factor,
+        **relative,
     )
 
 
@@ -256,6 +348,11 @@ class Report:
     by_model: dict[str, float | None] = field(default_factory=dict)
     strategy_weights: dict[str, float] = field(default_factory=dict)  # for --weights auto
     pending_details: list[Pending] = field(default_factory=list)  # why each pending one waits
+    # Up/down calls by Prediction.stability (share of persona-mode samples matching the
+    # call): evidence for whether stability should feed confidence (ai/spec.md).
+    by_stability: dict[str, tuple[int, float | None]] = field(default_factory=dict)
+    # 3-way accuracy against the outcome relative to BENCHMARK: {"benchmark", "scored", "accuracy"}.
+    relative: dict = field(default_factory=dict)
 
 
 def derive_strategy_weights(
@@ -284,8 +381,9 @@ def score(
     now: datetime,
 ) -> Report:
     outcomes, waiting = [], []
+    benchmark = closes_by_ticker.get(BENCHMARK)
     for p in predictions:
-        result = assess(p, closes_by_ticker.get(p.ticker), now)
+        result = assess(p, closes_by_ticker.get(p.ticker), now, benchmark)
         (outcomes if isinstance(result, Outcome) else waiting).append(result)
 
     baseline_names = sorted({name for o in outcomes for name in o.prediction.baselines})
@@ -306,6 +404,29 @@ def score(
             len(bucket),
             _rate(o.prediction.direction == o.actual for o in bucket),
         )
+    by_stability = {}
+    rated = [o for o in directional if o.prediction.stability is not None]
+    for low, high in STABILITY_BUCKETS:
+        bucket = [o for o in rated if low <= o.prediction.stability < high]
+        by_stability[f"{low:.2f}-{min(high, 1):.2f}"] = (
+            len(bucket),
+            _rate(o.prediction.direction == o.actual for o in bucket),
+        )
+
+    relative_outcomes = [o for o in outcomes if o.relative_actual is not None]
+    relative = {}
+    if relative_outcomes:
+        relative_accuracy = {
+            "personas": _rate(o.prediction.direction == o.relative_actual for o in relative_outcomes)
+        }
+        for name in baseline_names:
+            relative_accuracy[name] = _rate(
+                o.prediction.baselines[name] == o.relative_actual
+                for o in relative_outcomes
+                if name in o.prediction.baselines
+            )
+        relative = {"benchmark": BENCHMARK, "scored": len(relative_outcomes),
+                    "accuracy": relative_accuracy}
 
     votes_by_strategy: dict[str, list[bool]] = defaultdict(list)
     votes_by_age: dict[str, list[bool]] = defaultdict(list)
@@ -334,7 +455,14 @@ def score(
         by_model={m: _rate(v) for m, v in sorted(votes_by_model.items())},
         strategy_weights=derive_strategy_weights(votes_by_strategy),
         pending_details=waiting,
+        by_stability=by_stability,
+        relative=relative,
     )
+
+
+def scoring_tickers(predictions: Iterable[Prediction]) -> set[str]:
+    """Every ticker whose closes scoring needs: the predicted ones plus BENCHMARK."""
+    return {p.ticker for p in predictions} | {BENCHMARK}
 
 
 def fetch_closes(tickers: Iterable[str], since: date) -> dict[str, pd.Series]:
@@ -372,6 +500,6 @@ def score_log(path: Path = DEFAULT_LOG, now: datetime | None = None) -> Report:
         report = score([], {}, now)
     else:
         since = min(date.fromisoformat(p.data_as_of) for p in predictions)
-        report = score(predictions, fetch_closes((p.ticker for p in predictions), since), now)
+        report = score(predictions, fetch_closes(scoring_tickers(predictions), since), now)
     report.unreadable = unreadable
     return report

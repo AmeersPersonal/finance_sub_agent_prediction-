@@ -1,0 +1,49 @@
+# Backend tests (offline, plus the PostgreSQL integration tests on a local Unix
+# socket) and an image build. GitHub reads workflows only from the repo root;
+# the backend's own files stay under backend/ (backend/spec.md).
+name: backend
+
+on:
+  push:
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend/src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/src/requirements.lock
+      - name: Install dependencies (hash-checked)
+        run: pip install --require-hashes -r requirements.lock
+      - name: Start PostgreSQL on its Unix socket
+        # The runner image ships PostgreSQL, stopped. The tests accept only a local
+        # socket and use a throwaway schema per test (tests/spec.md).
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres createuser "$USER"
+          sudo -u postgres createdb --owner "$USER" finance_test
+      - name: Tests
+        env:
+          TEST_DATABASE_URL: postgresql:///finance_test?host=/var/run/postgresql
+        run: python -m pytest -q
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the API image
+        run: docker build -t finance-backend:ci backend
+      - name: The API imports without the ml stack or any secrets
+        run: docker run --rm finance-backend:ci python -c "import api.main"

@@ -1,14 +1,18 @@
-"""GeminiLLM retry behaviour, against a fake google-genai client (no network)."""
+"""LLM clients against fakes (no network): Gemini retries, the OpenAI-compatible
+provider, routing between them, and the reasoning modes built from the environment."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from google.genai import errors
 from pydantic import ValidationError
 
 import ai.llm as llm_module
-from ai.llm import RETRYABLE_STATUS, GeminiLLM
+from ai.llm import ALT_PREFIX, RETRYABLE_STATUS, GeminiLLM, OpenAICompatibleLLM, RoutingLLM, build_llm
+from ai.modes import DEFAULT_STRONG_MODEL, catalog, resolve_modes
 from ai.schemas import PersonaView
 
 GOOD = '{"direction": "up", "conviction": 0.7, "rationale": "r", "key_factors": []}'
@@ -110,3 +114,125 @@ def test_missing_key_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         GeminiLLM()
+
+
+# --- the second, OpenAI-compatible provider (MockTransport, no network) -----------
+
+def compat(responses, **kwargs):
+    """An OpenAICompatibleLLM whose HTTP calls replay `responses` (status, body)."""
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        status, body = responses.pop(0)
+        return httpx.Response(status, json=body)
+
+    llm = OpenAICompatibleLLM(base_url="http://alt.test/v1/", model="small-model",
+                              transport=httpx.MockTransport(handle), **kwargs)
+    return llm, requests
+
+
+def chat(content):
+    return {"choices": [{"message": {"content": content}}]}
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_module.asyncio, "sleep", sleep)
+    return sleeps
+
+
+def test_compatible_provider_sends_a_json_schema_request(no_sleep):
+    llm, requests = compat([(200, chat(GOOD))], api_key="alt-key")
+    assert run(llm, temperature=0.3).direction == "up"
+    request = requests[0]
+    assert str(request.url) == "http://alt.test/v1/chat/completions"
+    assert request.headers["authorization"] == "Bearer alt-key"
+    body = json.loads(request.content)
+    assert body["model"] == "small-model" and body["temperature"] == 0.3
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["schema"]["properties"]["direction"]
+
+
+def test_compatible_provider_without_a_key_sends_no_auth_header(no_sleep, monkeypatch):
+    monkeypatch.delenv("ALT_LLM_API_KEY", raising=False)
+    llm, requests = compat([(200, chat(GOOD))])  # a local Ollama server needs no key
+    run(llm)
+    assert "authorization" not in requests[0].headers
+    assert "temperature" not in json.loads(requests[0].content)
+
+
+def test_compatible_provider_retries_rate_limits_and_bad_json(no_sleep):
+    llm, requests = compat([(429, {}), (200, chat("not json")), (200, chat(GOOD))])
+    assert run(llm).conviction == 0.7
+    assert len(requests) == 3 and no_sleep == [2, 4]
+    llm, requests = compat([(400, {"error": "bad request"})])
+    with pytest.raises(httpx.HTTPStatusError):
+        run(llm)
+    assert len(requests) == 1
+
+
+def test_compatible_provider_needs_its_settings(monkeypatch):
+    monkeypatch.delenv("ALT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("ALT_LLM_MODEL", raising=False)
+    with pytest.raises(RuntimeError, match="ALT_LLM_BASE_URL"):
+        OpenAICompatibleLLM()
+
+
+class Recorder:
+    def __init__(self, model):
+        self.model, self.calls = model, []
+
+    async def generate_json(self, system, prompt, schema, *, temperature=None, model=None):
+        self.calls.append((model, temperature))
+        return schema.model_validate_json(GOOD)
+
+
+def test_routing_sends_alt_models_to_the_second_provider():
+    primary, alt = Recorder("gemini"), Recorder("small-model")
+    router = RoutingLLM(primary, alt)
+    assert router.model == "gemini"
+    run(router)
+    run(router, model="gemini-strong", temperature=1.0)
+    run(router, model=ALT_PREFIX + "llama3.1", temperature=0.2)
+    assert primary.calls == [(None, None), ("gemini-strong", 1.0)]
+    assert alt.calls == [("llama3.1", 0.2)]
+
+
+def test_build_llm_adds_the_second_provider_only_when_configured(monkeypatch):
+    monkeypatch.setattr(llm_module, "GeminiLLM", lambda: Recorder("gemini"))
+    monkeypatch.delenv("ALT_LLM_BASE_URL", raising=False)
+    assert isinstance(build_llm(), Recorder)
+    monkeypatch.setenv("ALT_LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("ALT_LLM_MODEL", "llama3.1")
+    assert isinstance(build_llm(), RoutingLLM)
+
+
+# --- reasoning modes read the environment ------------------------------------------
+
+def test_strong_model_comes_from_the_environment(monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL_STRONG", raising=False)
+    assert catalog()["strong"].model == DEFAULT_STRONG_MODEL
+    monkeypatch.setenv("GEMINI_MODEL_STRONG", "gemini-env-strong")
+    modes = {m.name: m for m in resolve_modes("full,models")}
+    assert modes["strong"].model == modes["strong-t1.0"].model == "gemini-env-strong"
+    assert modes["base-t0.2"].model is None and modes["strong-t0.2"].temperature == 0.2
+
+
+def test_alt_mode_exists_only_with_a_second_provider(monkeypatch):
+    monkeypatch.delenv("ALT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("ALT_LLM_MODEL", raising=False)
+    assert "alt" not in catalog()
+    for spec in ("alt", "providers", "default,alt"):
+        with pytest.raises(ValueError, match="ALT_LLM_BASE_URL"):
+            resolve_modes(spec)
+    monkeypatch.setenv("ALT_LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("ALT_LLM_MODEL", "llama3.1")
+    assert [(m.name, m.model) for m in resolve_modes("providers")] == [
+        ("default", None), ("alt", "alt:llama3.1")]

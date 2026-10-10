@@ -7,7 +7,7 @@
 - [x] Tried extra features in `linear_regression.FEATURES` in walk-forward; none beat the current set, so `FEATURES` is unchanged (see Feature experiment).
 - [x] `max_drawdown` unified: `indicators.max_drawdown` is the one implementation; `backtest.max_drawdown` builds the equity curve from 1.0 and calls it. This fixed a bug where a loss in the first period wasn't counted.
 - [x] Documented that positioning data (insiders, 13F, short interest) is point-in-time and cannot be backtested (`positioning.py` docstring, Design rules).
-- [ ] The regression baseline is *below* always-up on average (see Feature experiment). Keep it as a sanity check, but treat always-up as the bar the personas must clear.
+- [x] The regression baseline is *below* always-up on average (see Feature experiment): recorded as a design rule below, not a task.
 
 ## Purpose
 
@@ -19,8 +19,8 @@ return numbers or small dicts, returning `None` when data is missing.
 
 | File | Role |
 |---|---|
-| `indicators.py` | RSI, MACD, ATR, VWAP, volume profile, beta, relative strength, options sentiment, max drawdown, and the flat band |
-| `linear_regression.py` | OLS on price features, walk-forward validated; the baseline the personas are scored against. `FEATURE_FUNCTIONS` registry; `FEATURES` is the kept set, `CANDIDATE_FEATURES` were tried and not kept |
+| `indicators.py` | RSI, MACD (last bar and `macd_series`), ATR, VWAP (session value and `vwap_series`), volume profile (`volume_by_price` for the buckets), beta, relative strength, options sentiment, max drawdown, and the flat band |
+| `linear_regression.py` | OLS on price features, walk-forward validated; the baseline the personas are scored against. `period_returns` gives the per-period returns behind its strategy / buy-and-hold summaries. `FEATURE_FUNCTIONS` registry; `FEATURES` is the kept set, `CANDIDATE_FEATURES` were tried and not kept |
 | `backtest.py` | Strategy returns with costs; Sharpe, Sortino, max drawdown (of the equity curve), profit factor |
 | `fundamentals.py` | Margins, FCF, ROIC, leverage, valuation; Beneish M-score; shared `value` / `ttm` / `ratio` helpers |
 | `risk_management.py` | Altman Z-score (annual and TTM); ATR stop distance and fixed-fractional position size |
@@ -36,6 +36,7 @@ return numbers or small dicts, returning `None` when data is missing.
 - Financial-sector companies are excluded from Altman Z and Beneish (`NOT_APPLICABLE_SECTORS`).
 - Positioning data is point-in-time: yfinance serves only today's values, so it must never be a regression feature or part of a backtest.
 - Change `FEATURES` only on walk-forward evidence across many tickers, scored on identical rows.
+- The regression is a sanity check, not the bar: it scores below always-up on average, so always-up is what the personas must beat.
 - No imports from `ai/`.
 
 ## Feature experiment (2026-10-09)

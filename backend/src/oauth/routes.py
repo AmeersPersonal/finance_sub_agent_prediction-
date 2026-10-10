@@ -21,21 +21,25 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from oauth.provider import HttpProvider, OAuthSettings, Provider, pkce_challenge
-from oauth.sessions import LOGIN_TTL, SESSION_TTL, MemoryStore
+from oauth.sessions import LOGIN_TTL, SESSION_TTL, SessionStore, store_from_env
 
 STATE_COOKIE = "oauth_state"
 SESSION_COOKIE = "session"
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/oauth", tags=["oauth"])
-_store = MemoryStore()
+_store: SessionStore | None = None
 
 
 def get_settings() -> OAuthSettings:
     return OAuthSettings.from_env()
 
 
-def get_store() -> MemoryStore:
+def get_store() -> SessionStore:
+    """Created on first use, after the API has loaded backend/.env (`OAUTH_SESSION_STORE`)."""
+    global _store
+    if _store is None:
+        _store = store_from_env()
     return _store
 
 
@@ -43,7 +47,7 @@ def get_provider(settings: OAuthSettings = Depends(get_settings)) -> Provider:
     return HttpProvider(settings)
 
 
-def current_user(request: Request, store: MemoryStore = Depends(get_store)) -> dict[str, Any]:
+def current_user(request: Request, store: SessionStore = Depends(get_store)) -> dict[str, Any]:
     session_id = request.cookies.get(SESSION_COOKIE)
     user = store.get_session(session_id) if session_id else None
     if user is None:
@@ -57,7 +61,7 @@ def _same(a: str, b: str) -> bool:
 
 @router.get("/login")
 def login(
-    settings: OAuthSettings = Depends(get_settings), store: MemoryStore = Depends(get_store)
+    settings: OAuthSettings = Depends(get_settings), store: SessionStore = Depends(get_store)
 ) -> RedirectResponse:
     if not settings.configured:
         raise HTTPException(503, "OAuth is not configured: set OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET")
@@ -88,7 +92,7 @@ async def callback(
     state: str | None = None,
     error: str | None = None,
     settings: OAuthSettings = Depends(get_settings),
-    store: MemoryStore = Depends(get_store),
+    store: SessionStore = Depends(get_store),
     provider: Provider = Depends(get_provider),
 ) -> Response:
     if error:
@@ -130,7 +134,7 @@ def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
 
 
 @router.post("/logout")
-def logout(request: Request, store: MemoryStore = Depends(get_store)) -> JSONResponse:
+def logout(request: Request, store: SessionStore = Depends(get_store)) -> JSONResponse:
     session_id = request.cookies.get(SESSION_COOKIE)
     if session_id:
         store.end_session(session_id)

@@ -2,13 +2,13 @@
 
 ## TODOS
 
-- [ ] No tests for `ai/modes.py` env override of the strong model beyond `test_pipeline.py`.
+- [x] `ai/modes.py` reads the environment: `GEMINI_MODEL_STRONG` and the `alt` mode (`test_llm.py`).
 - [x] Tests for `ai/llm.py` retry behaviour (`RETRYABLE_STATUS`): `test_llm.py`.
 - [x] Tests for `main.py` argument handling and `render`: `test_cli.py`.
 - [x] Tests for `audit/` and `oauth/`: `test_audit.py`, `test_oauth.py` (plus `test_api.py`, `test_live.py`).
 - [x] Coverage run added to the commands below (`pytest-cov`, settings in `../.coveragerc`).
-- [ ] Starlette 1.7 warns that `TestClient` on `httpx` is deprecated in favour of `httpx2`; switch when `httpx2` is pinned.
-- [ ] `ai/tool.py`'s network fetchers and `oauth.provider.HttpProvider` are untested offline; cover them with recorded responses (`httpx.MockTransport`, a fake `yf.Ticker`) if they start to break.
+- [x] `httpx2==2.13.1` is pinned (a test dependency); Starlette's `TestClient` uses it and the deprecation warning is gone.
+- [x] `ai/tool.py`'s fetchers run against a fake `yf.Ticker` (`test_tool.py`); `HttpProvider`, the second LLM provider and Finnhub against `httpx.MockTransport` (`test_oauth.py`, `test_llm.py`, `test_live.py`).
 
 ## Purpose
 
@@ -24,15 +24,18 @@ database. API tests use an in-process client with mocked services.
 | `test_pipeline.py` | `predict()` end to end with the fake LLM, including multi-mode runs; packets; prompt changelog |
 | `test_service.py`, `test_sources.py` | Ingestion/evidence orchestration and forecast options in `predict_and_store`; mocked online providers |
 | `test_model_data.py` | Stored-row conversion, timezone/session checks, and rejection of missing/invalid values |
-| `test_database.py` | Credential-safe configuration, frozen input packets, and opt-in local PostgreSQL persistence/constraints |
+| `test_database.py` | Credential-safe configuration, frozen input packets, and opt-in local PostgreSQL persistence/constraints, shared sessions, preferences, price revisions |
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
 | `test_evaluation.py` | baselines, log, scorer (NYSE calendar, splits, pending reasons), derived strategy weights |
 | `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
 | `test_ml.py` | `ml/`: labels match the scorer, no future data in features or training, metrics, the three models (MLP on CPU), store round trip, model B and `--weights auto` replay, coverage and calibration, `python -m ml` with fetches stubbed |
-| `test_llm.py` | `GeminiLLM` retries, backoff and give-up, against a fake genai client |
-| `test_live.py` | websocket live quote: first tick, timeout, dropped connection, fallback |
+| `test_llm.py` | `GeminiLLM` retries, backoff and give-up, against a fake genai client; the OpenAI-compatible provider and routing; modes from the environment |
+| `test_live.py` | websocket live quote: first tick, timeout, dropped connection, fallback; Finnhub's quote; `LIVE_FEED` |
 | `test_cli.py` | `main.py`: argument errors, `--weights`, `--backtest`, rendering, predict + log |
 | `test_api.py` | The HTTP API with a faked service and LLM: routes, validation, option pass-through, error statuses, `/score`, OAuth mount, CORS |
+| `test_api_access.py` | Sign-in on forecasts, per-user rate limits, background prediction jobs, the score cache, `/me/preferences` |
+| `test_backup.py` | `database.backup`: retention schedule, pruning, credentials kept out of pg_dump's arguments |
+| `test_charts.py` | `charts/` builders (alignment, JSON-safe nulls, thin data, 5m VWAP and volume profile, equity curve matching `run_regression`, accuracy over time) and the `/charts` routes |
 | `test_oauth.py` | OAuth routes with a fake provider: state/CSRF, PKCE, replay, expiry, sessions |
 | `test_audit.py` | company overview, data checks, risk checklist, news digest |
 | `test_sentiment.py`, `test_feeds.py`, `test_rag_retrieval.py`, `test_tool.py` | ai helpers, news items, cache pruning, `clean_daily` |

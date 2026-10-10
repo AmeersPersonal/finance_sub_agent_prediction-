@@ -1,6 +1,9 @@
 import asyncio
 
-from ai.live import YahooLiveFeed, apply_live_quote
+import httpx
+import pytest
+
+from ai.live import FinnhubLiveFeed, YahooLiveFeed, apply_live_quote, live_feed_from_env
 from ai.main import predict
 
 
@@ -93,3 +96,60 @@ def test_predict_uses_the_live_feed(snapshot, fake_llm):
         predict("TEST", llm=fake_llm, snapshot=snapshot, live_feed=FixedFeed(error=TimeoutError()))
     )
     assert any(w.startswith("live:") for w in quiet.data_warnings)
+
+
+# --- Finnhub's quote endpoint (MockTransport, no network) --------------------------
+
+NOW = 1_791_000_000.0  # a fixed clock, in Unix seconds
+
+
+def finnhub(quote, status=200):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(status, json=quote)
+
+    feed = FinnhubLiveFeed(api_key="finnhub-key", transport=httpx.MockTransport(handle), clock=lambda: NOW)
+    return feed, requests
+
+
+def test_finnhub_returns_a_recent_trade():
+    feed, requests = finnhub({"c": 101.5, "pc": 100.0, "t": NOW - 60})
+    tick = asyncio.run(feed.first_tick("AAPL", 5))
+    assert tick["price"] == 101.5 and tick["previous_close"] == 100.0
+    request = requests[0]
+    assert request.url.params["symbol"] == "AAPL"
+    # The key travels in a header, never in the URL (which ends up in logs).
+    assert request.headers["x-finnhub-token"] == "finnhub-key" and "finnhub-key" not in str(request.url)
+
+
+@pytest.mark.parametrize("quote, error", [
+    ({"c": 101.5, "pc": 100.0, "t": NOW - 3 * 3600}, TimeoutError),  # market closed: stale trade
+    ({"c": 0, "pc": 0, "t": 0}, ValueError),                          # unknown symbol
+])
+def test_finnhub_refuses_stale_or_empty_quotes(quote, error):
+    feed, _ = finnhub(quote)
+    with pytest.raises(error):
+        asyncio.run(feed.first_tick("AAPL", 5))
+
+
+def test_finnhub_failure_keeps_the_rest_price(snapshot):
+    feed, _ = finnhub({"error": "invalid key"}, status=401)
+    before = snapshot.last_price
+    warning = asyncio.run(apply_live_quote(snapshot, feed))
+    assert "kept the REST quote" in warning and snapshot.last_price == before
+
+
+def test_live_feed_is_chosen_by_environment(monkeypatch):
+    monkeypatch.delenv("LIVE_FEED", raising=False)
+    assert isinstance(live_feed_from_env(), YahooLiveFeed)
+    monkeypatch.setenv("LIVE_FEED", "finnhub")
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="FINNHUB_API_KEY"):
+        live_feed_from_env()
+    monkeypatch.setenv("FINNHUB_API_KEY", "key")
+    assert live_feed_from_env().name == "finnhub"
+    monkeypatch.setenv("LIVE_FEED", "carrier-pigeon")
+    with pytest.raises(ValueError, match="LIVE_FEED"):
+        live_feed_from_env()

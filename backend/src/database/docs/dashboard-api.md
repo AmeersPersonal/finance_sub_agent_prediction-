@@ -22,7 +22,10 @@ systemctl --user restart hack-knight-api.service
 2. `POST /stocks/NVDA/refresh` fetches and stores prices, company information,
    and available online documents. It does not call Gemini.
 3. Read `/stocks/NVDA/history` for the chart and `/stocks/NVDA/news` for links.
-4. `POST /predictions` creates and saves a forecast. Example request body:
+4. `POST /predictions` creates and saves a forecast, holding the request open
+   for the whole run; `POST /prediction-jobs` takes the same body, returns a job
+   id at once, and `GET /prediction-jobs/{job_id}` reports its progress and
+   result. Example request body:
 
 ```json
 {
@@ -58,7 +61,10 @@ Gemini, and preserve the evidence. Source IDs actually cited by personas are
 recorded separately from passages merely supplied. Forecast strength is not a
 probability of success.
 
-Keep the API bound to localhost for this demo. Google sign-in routes live under
-`/oauth/` but forecasts don't require them yet; no real trades are executed.
+Keep the API bound to localhost for this demo. Creating a forecast (`POST
+/predictions` or `POST /prediction-jobs`) needs a Google sign-in through
+`/oauth/`, unless `API_REQUIRE_SIGN_IN=false` is set for local development,
+and each caller gets `API_PREDICTIONS_PER_HOUR` forecasts an hour (default 10).
+No real trades are executed.
 The full route list and the notes for the frontend team are in
 [`api/spec.md`](../../api/spec.md).

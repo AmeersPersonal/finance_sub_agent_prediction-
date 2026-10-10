@@ -9,11 +9,24 @@ from api import main
 from database.connection import DatabaseError
 
 
+CALLER = "user:test"  # stands in for a signed-in user; sign-in itself is tested below
+
+
+@pytest.fixture(autouse=True)
+def fresh_api_state():
+    """The rate limit, jobs and score cache are module-level: start every test clean."""
+    for state in (main.prediction_limiter, main.jobs, main.score_cache):
+        state.clear()
+    yield
+    for state in (main.prediction_limiter, main.jobs, main.score_cache):
+        state.clear()
+
+
 @pytest.fixture
 def client(monkeypatch, fake_llm):
     monkeypatch.setattr(main, "_read", lambda method, *args, **kwargs: [])
     # Never build a real Gemini client, whether or not a backend/.env key exists.
-    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm}
+    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm, main.prediction_caller: lambda: CALLER}
     try:
         with TestClient(main.app) as client:
             yield client
@@ -146,7 +159,7 @@ def predict_client(monkeypatch, fake_llm):
         captured.update(method=method, args=args, kwargs=kwargs)
         return {"ticker": args[0], "direction": "up"}
     monkeypatch.setattr(main, "_service", service)
-    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm}
+    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm, main.prediction_caller: lambda: CALLER}
     try:
         with TestClient(main.app) as client:
             yield client, captured
@@ -202,7 +215,7 @@ def test_service_errors_map_to_safe_statuses(monkeypatch, fake_llm):
     async def outage(*args, **kwargs):
         raise RuntimeError("All 13 personas failed; first error: secret provider detail")
 
-    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm}
+    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm, main.prediction_caller: lambda: CALLER}
     try:
         with TestClient(main.app) as client:
             monkeypatch.setattr(service, "predict_and_store", no_personas)

@@ -30,6 +30,20 @@ def load_daily_prices(repository, ticker: str, *, cutoff: datetime,
     return daily_prices_from_rows(rows)
 
 
+def load_daily_prices_as_known(repository, ticker: str, *, as_of: datetime,
+                               start_at: datetime | None = None,
+                               end_at: datetime | None = None) -> pd.DataFrame:
+    """Daily prices exactly as the database knew them at `as_of`, corrections made
+    since undone from the revision archive (migration 006). `load_daily_prices`
+    instead reads the latest corrected values fetched by its cutoff."""
+    for timestamp in (as_of, start_at, end_at):
+        if timestamp is not None and timestamp.tzinfo is None:
+            raise ModelDataError("Model dataset bounds must include a timezone.")
+    rows = repository.get_price_history_as_of(ticker, as_of=as_of, interval="1d",
+                                              start_at=start_at, end_at=end_at)
+    return daily_prices_from_rows(rows)
+
+
 def daily_prices_from_rows(rows) -> pd.DataFrame:
     """Validate both mutable stored bars and frozen forecast dataset rows."""
     if not rows:
