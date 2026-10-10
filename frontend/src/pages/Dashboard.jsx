@@ -1,3 +1,11 @@
+import { lazy, Suspense } from 'react'
+
+const MarketDashboard = lazy(() => import('../features/market-dashboard/MarketDashboard.jsx'))
+
 export default function Dashboard(){
-     return <h1>Dashboard</h1>
+     return (
+          <Suspense fallback={null}>
+               <MarketDashboard />
+          </Suspense>
+     )
 }
