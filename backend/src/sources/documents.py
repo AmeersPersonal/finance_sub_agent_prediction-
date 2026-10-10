@@ -1,7 +1,13 @@
-"""Collect feed evidence and optional official SEC filing text.
+"""Collect feed evidence and optional official SEC text.
+
+Every document carries a role: company_info (the company's own filings),
+public_opinion (news coverage) or product_event
+(launches, announcements and rumors). Retrieval mixes the roles per strategy.
 
 Publisher links are retained as citations, never followed to scrape articles.
 Feed summaries are explicitly excerpts, not full articles or public-opinion polls.
+Google News RSS gives headlines only; its feed terms allow personal,
+non-commercial reading, which fits this learning prototype and nothing more.
 SEC downloading is opt-in through SEC_USER_AGENT (application + contact email).
 All fetched URLs and redirects stay on a fixed HTTPS provider allowlist.
 """
@@ -23,8 +29,14 @@ from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
 YAHOO_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
-ALLOWED_HOSTS = frozenset({"feeds.finance.yahoo.com", "www.sec.gov", "data.sec.gov", "sec.gov"})
+ALLOWED_HOSTS = frozenset({
+    "feeds.finance.yahoo.com", "news.google.com", "www.sec.gov", "data.sec.gov", "sec.gov",
+})
+PRODUCT_TERMS = re.compile(
+    r"\b(launch\w*|announc\w*|unveil\w*|introduc\w*|product\w*|rumou?r\w*|leak\w*)\b", re.I)
+UNCONFIRMED_TERMS = re.compile(r"\b(rumou?r\w*|leak\w*|reportedly|speculat\w*|unconfirmed)\b", re.I)
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 TIMEOUT_SECONDS = 15
 _sec_lock = threading.Lock()
@@ -151,8 +163,35 @@ def _citation_url(value: str) -> bool:
         return False
 
 
+def _norm(value: str) -> str:
+    return re.sub(r"\W+", "", value.lower())
+
+
+def _adds_text(summary: str, title: str, source_name: str) -> bool:
+    """Whether a feed description says more than the headline and publisher name.
+
+    Google News descriptions only repeat the linked headline and publisher.
+    """
+    rest = _norm(summary).replace(_norm(title), "", 1)
+    if source_name:
+        rest = rest.replace(_norm(source_name), "")
+    return bool(rest)
+
+
+def classify(text: str, default_role: str | None = None) -> dict:
+    """Keyword role for news-like text; a query-chosen role wins when given."""
+    if default_role:
+        role, method = default_role, "query"
+    else:
+        role = "product_event" if PRODUCT_TERMS.search(text) else "public_opinion"
+        method = "keyword"
+    return {"role": role, "method": method, "unconfirmed": bool(UNCONFIRMED_TERMS.search(text))}
+
+
 def parse_news_rss(xml: bytes, ticker: str, limit: int = 10,
-                   seen_at: datetime | None = None) -> list[SourceDocument]:
+                   seen_at: datetime | None = None, *, provider: str = "yahoo_rss",
+                   default_source: str = "Yahoo Finance RSS",
+                   role: str | None = None) -> list[SourceDocument]:
     if limit <= 0:
         return []
     # ElementTree does not fetch external entities; reject DTD input explicitly.
@@ -167,23 +206,24 @@ def parse_news_rss(xml: bytes, ticker: str, limit: int = 10,
         link = (item.findtext("link") or "").strip()
         if not title or not _citation_url(link) or link in seen_links:
             continue
+        source_node = item.find("source")
+        source_name = (source_node.text or "").strip() if source_node is not None else ""
+        if source_name and title.endswith(f" - {source_name}"):
+            title = title[: -len(source_name) - 3].strip()  # Google News appends the publisher
         # content:encoded, when supplied, can still be a teaser. Never call it full text.
         body = item.findtext("{http://purl.org/rss/1.0/modules/content/}encoded")
         summary = text_from_html(body or item.findtext("description") or "")
+        if summary and not _adds_text(summary, title, source_name):
+            summary = ""
         published = _parse_date(item.findtext("pubDate"))
         if published is not None and published > seen_at:
             continue
-        role = "product_event" if re.search(
-            r"\b(launch\w*|announc\w*|unveil\w*|product\w*|rumou?r\w*)\b", title + " " + summary, re.I
-        ) else "public_opinion"
-        source_node = item.find("source")
-        source_name = (source_node.text or "").strip() if source_node is not None else ""
         documents.append(SourceDocument(
             source_url=link, title=title, content_text=summary or title,
             document_type="news", content_kind="excerpt" if summary else "headline",
-            source_name=source_name or "Yahoo Finance RSS", published_at=published,
-            first_seen_at=seen_at, classification={"role": role, "method": "keyword"},
-            metadata={"ticker": ticker.upper(), "provider": "yahoo_rss", "text_origin": "feed_body" if summary else "feed_title",
+            source_name=source_name or default_source, published_at=published,
+            first_seen_at=seen_at, classification=classify(title + " " + summary, role),
+            metadata={"ticker": ticker.upper(), "provider": provider, "text_origin": "feed_body" if summary else "feed_title",
                       "publication_time_known": published is not None,
                       "coverage": "Publisher-supplied feed excerpt; not a population sentiment measure"},
         ))
@@ -191,6 +231,42 @@ def parse_news_rss(xml: bytes, ticker: str, limit: int = 10,
         if len(documents) >= limit:
             break
     return documents
+
+
+def company_query_name(company_name: str) -> str:
+    """'Apple Inc.' -> 'Apple': legal suffixes make news searches miss."""
+    name = re.sub(r'["()]', " ", company_name).strip()
+    suffix = re.compile(r"[,.]?\s+(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|"
+                        r"holdings|group|n\.?v|s\.?a|ag|se|class\s+[a-z])\.?$", re.I)
+    while (shorter := suffix.sub("", name)) != name:
+        name = shorter.strip()
+    return re.sub(r"\s+", " ", name)
+
+
+def fetch_google_news(ticker: str, company_name: str = "", limit: int = 8,
+                      seen_at: datetime | None = None) -> DocumentCollection:
+    """Two Google News searches: ticker news, and product launches/rumors.
+
+    Items are headlines linked through news.google.com; links are never followed.
+    """
+    result = DocumentCollection()
+    company = company_query_name(company_name) or ticker
+    searches = (
+        ("news", f'"{ticker}" stock when:7d', None),
+        ("product", f'"{company}" (launch OR unveil OR announces OR product OR rumor OR leak) when:30d',
+         "product_event"),
+    )
+    for label, query, role in searches:
+        try:
+            xml = _get(GOOGLE_NEWS_RSS.format(query=quote(query, safe="")))
+            documents = parse_news_rss(xml, ticker, limit, seen_at, provider="google_news_rss",
+                                       default_source="Google News", role=role)
+            for document in documents:
+                document.metadata["search"] = label
+            result.documents.extend(documents)
+        except Exception as exc:
+            result.warnings.append(f"Google News {label} evidence unavailable ({type(exc).__name__})")
+    return result
 
 
 def fetch_sec_filings(ticker: str, company_name: str, user_agent: str,
@@ -249,6 +325,20 @@ def fetch_sec_filings(ticker: str, company_name: str, user_agent: str,
     return result
 
 
+def _dedupe(documents: list[SourceDocument]) -> list[SourceDocument]:
+    """One copy per link and per news headline (Yahoo and Google often carry the same story)."""
+    links, headlines, kept = set(), set(), []
+    for document in documents:
+        key = _norm(document.title) if document.document_type == "news" else None
+        if document.source_url in links or (key and key in headlines):
+            continue
+        links.add(document.source_url)
+        if key:
+            headlines.add(key)
+        kept.append(document)
+    return kept
+
+
 def fetch_documents(ticker: str, company_name: str = "") -> DocumentCollection:
     """Fetch a small current evidence set; failures preserve successful sources.
 
@@ -266,6 +356,9 @@ def fetch_documents(ticker: str, company_name: str = "") -> DocumentCollection:
             result.warnings.append("Yahoo feed returned no source-linked evidence")
     except Exception as exc:
         result.warnings.append(f"Yahoo news evidence unavailable ({type(exc).__name__})")
+    google = fetch_google_news(ticker, company_name)
+    result.documents.extend(google.documents)
+    result.warnings.extend(google.warnings)
     user_agent = os.environ.get("SEC_USER_AGENT", "").strip()
     if user_agent:
         filings = fetch_sec_filings(ticker, company_name, user_agent)
@@ -273,4 +366,5 @@ def fetch_documents(ticker: str, company_name: str = "") -> DocumentCollection:
         result.warnings.extend(filings.warnings)
     else:
         result.warnings.append("SEC filings disabled: configure SEC_USER_AGENT to enable official filing text")
+    result.documents = _dedupe(result.documents)
     return result

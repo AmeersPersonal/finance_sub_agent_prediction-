@@ -107,9 +107,13 @@ def test_fetch_news_does_not_follow_publisher_links(monkeypatch):
 
     monkeypatch.setattr(sources, "_get", fake_get)
     result = sources.fetch_documents("NVDA")
-    assert len(calls) == 1
+    # Yahoo, then Google News for news and for product/rumor coverage; no publisher pages.
+    assert len(calls) == 3
     assert "feeds.finance.yahoo.com" in calls[0]
+    assert all("news.google.com/rss/search" in url for url in calls[1:])
     assert result.documents
+    # The same story from several feeds is kept once.
+    assert len({d.source_url for d in result.documents}) == len(result.documents)
     assert any("SEC filings disabled" in warning for warning in result.warnings)
 
 
@@ -182,3 +186,60 @@ def test_sec_rejects_unsafe_document_path(monkeypatch):
     assert len(calls) == 2
     assert not result.documents
     assert "unsupported document path" in result.warnings[0]
+
+
+GOOGLE_RSS = b"""<rss><channel>
+<item><title>Example Chips stock slides after guidance - Market Daily</title>
+<link>https://news.google.com/rss/articles/abc?oc=5</link>
+<pubDate>Fri, 09 Oct 2026 15:00:00 GMT</pubDate>
+<description>&lt;a href="https://news.google.com/rss/articles/abc?oc=5"&gt;Example Chips stock slides after guidance - Market Daily&lt;/a&gt;&amp;nbsp;&amp;nbsp;&lt;font color="#6f6f6f"&gt;Market Daily&lt;/font&gt;</description>
+<source url="https://marketdaily.example">Market Daily</source></item>
+<item><title>Example Chips reportedly readies new AI accelerator - Tech Wire</title>
+<link>https://news.google.com/rss/articles/def?oc=5</link>
+<pubDate>Thu, 08 Oct 2026 15:00:00 GMT</pubDate>
+<source url="https://techwire.example">Tech Wire</source></item>
+</channel></rss>"""
+
+
+def test_google_news_items_are_headlines_with_publisher_and_query_role(monkeypatch):
+    calls = []
+
+    def fake_get(url, user_agent=""):
+        calls.append(url)
+        return GOOGLE_RSS
+
+    monkeypatch.setattr(sources, "_get", fake_get)
+    result = sources.fetch_google_news("NVDA", "Example Chips Corporation", seen_at=NOW)
+    assert result.warnings == []
+    assert len(calls) == 2
+    assert "%22NVDA%22" in calls[0] and "%22Example%20Chips%22" in calls[1]  # legal suffix dropped
+    news = [d for d in result.documents if d.metadata["search"] == "news"]
+    product = [d for d in result.documents if d.metadata["search"] == "product"]
+    first = news[0]
+    assert first.title == "Example Chips stock slides after guidance"
+    assert first.source_name == "Market Daily"
+    # The description only repeats the headline, so it is not an excerpt.
+    assert first.content_kind == "headline"
+    assert first.content_text == first.title
+    assert first.metadata["provider"] == "google_news_rss"
+    assert first.classification == {"role": "public_opinion", "method": "keyword", "unconfirmed": False}
+    # Keyword roles are coarse: "readies" is not a product keyword, but the rumor wording is flagged.
+    assert news[1].classification == {"role": "public_opinion", "method": "keyword", "unconfirmed": True}
+    assert all(d.classification["role"] == "product_event" and d.classification["method"] == "query"
+               for d in product)
+    assert product[1].classification["unconfirmed"] is True
+
+
+def test_google_news_failure_is_a_warning(monkeypatch):
+    monkeypatch.setattr(sources, "_get", lambda *a, **k: (_ for _ in ()).throw(TimeoutError()))
+    result = sources.fetch_google_news("NVDA")
+    assert result.documents == []
+    assert [w.split(" evidence")[0] for w in result.warnings] == ["Google News news", "Google News product"]
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("Apple Inc.", "Apple"), ("NVIDIA Corporation", "NVIDIA"), ("Alphabet Inc. Class A", "Alphabet"),
+    ('Odd "Name" Holdings, Ltd.', "Odd Name"), ("", ""),
+])
+def test_company_query_name_drops_legal_suffixes(name, expected):
+    assert sources.company_query_name(name) == expected
