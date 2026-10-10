@@ -175,3 +175,21 @@ def test_main_exits_nonzero_on_failure(snapshot, monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exit_info:
         main.main(["NOPE", "--backtest"])
     assert exit_info.value.code == 1
+
+
+def test_score_report_explains_pending_predictions():
+    from types import SimpleNamespace
+
+    from ai.evaluation import Report
+    from main import render_report
+
+    waiting = SimpleNamespace(
+        prediction=SimpleNamespace(ticker="AAPL", data_as_of="2026-11-25", horizon_days=2),
+        detail="The 2-trading-day horizon ends on 2026-11-30 (Monday).",
+    )
+    report = Report(scored=0, pending=1, unreadable=0, accuracy={}, coverage=None,
+                    accuracy_when_called=None, by_confidence={}, by_strategy={}, by_age_band={},
+                    pending_details=[waiting])
+    text = render_report(report)
+    assert "Pending, and why:" in text
+    assert "AAPL   2026-11-25 +2d  The 2-trading-day horizon ends on 2026-11-30 (Monday)." in text

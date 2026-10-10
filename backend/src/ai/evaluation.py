@@ -14,7 +14,9 @@ fact (NVDA's 2024-06-07 close reads 120.89, not the ~1209 it traded at before
 its 10:1 split). The logged price is in the share units of its data date, so
 `resolve` multiplies the provider close by every split after that date.
 Outcome dates come from the NYSE calendar (holidays are not sessions); a
-missing bar, unsettled session or unverified basis leaves a prediction pending.
+missing bar, unsettled session or unverified basis leaves a prediction pending,
+and `assess` says why in plain words (`Pending.detail`), e.g. which holiday the
+horizon skips or which session has no price yet.
 
 The scorer also suggests strategy weights from each strategy's scored votes;
 `python main.py AAPL --weights auto` feeds them back into `predict()`.
@@ -98,70 +100,124 @@ class Outcome:
     split_factor: float = 1.0  # provider close x split_factor = price in the logged share basis
 
 
-def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome | None:
-    """Resolve an exact exchange session, preserving the logged entry price.
+@dataclass(frozen=True)
+class Pending:
+    """Why a prediction can't be scored yet. `retry_after` is when it next could be."""
+
+    prediction: Prediction
+    reason: str  # short code: horizon_open, missing_bar, no_price_data, not_a_session, ...
+    detail: str  # one plain sentence for people
+    retry_after: datetime | None = None
+
+
+def _holiday_names(calendar, start: pd.Timestamp, end: pd.Timestamp) -> dict[date, str]:
+    names: dict[date, str] = {}
+    for rule in calendar.regular_holidays.rules:
+        for day in rule.dates(start, end):
+            names[day.date()] = rule.name
+    for day in calendar.adhoc_holidays:
+        if start <= day <= end:
+            names.setdefault(day.date(), "unscheduled closure")
+    return names
+
+
+def _closures(calendar, session: pd.Timestamp, target: pd.Timestamp) -> str:
+    """Weekday closures and early closes between the data date and the outcome session."""
+    names = _holiday_names(calendar, session, target)
+    notes = [f"{day.date()} {names.get(day.date(), 'market closed')}"
+             for day in pd.bdate_range(session, target)
+             if not calendar.is_session(day)]
+    notes += [f"{day.date()} early close at {calendar.session_close(day).tz_convert(MARKET_TZ):%H:%M} ET"
+              for day in calendar.sessions_in_range(session, target)
+              if calendar.session_close(day).tz_convert(MARKET_TZ).time() < time(16)]
+    return f" The NYSE calendar accounts for: {'; '.join(notes)}." if notes else ""
+
+
+def assess(prediction: Prediction, closes: pd.Series | None, now: datetime) -> Outcome | Pending:
+    """Score one prediction on its exact exchange session, or say why it can't be yet.
 
     Injected plain Series are assumed to already use the prediction share basis.
     Provider Series must declare their basis and complete corporate actions.
     """
-    def refuse(reason: str) -> None:
-        log.warning("cannot score %s (%s): %s", prediction.ticker, prediction.data_as_of, reason)
-        return None
+    def pending(reason: str, detail: str, retry_after: datetime | None = None) -> Pending:
+        if reason != "horizon_open":
+            log.warning("cannot score %s (%s): %s", prediction.ticker, prediction.data_as_of, detail)
+        return Pending(prediction, reason, detail, retry_after)
 
     if now.tzinfo is None:
-        return refuse("scoring time must be timezone-aware")
+        return pending("clock", "The scoring clock has no timezone, so the closing time can't be checked.")
     start = date.fromisoformat(prediction.data_as_of)
-    calendar_name = closes.attrs.get("calendar", "XNYS")
-    if calendar_name != "XNYS":
-        return refuse("unsupported or unverified exchange calendar")
+    if closes is None:
+        return pending("no_price_data", f"The price provider returned no history for {prediction.ticker} yet.")
+    if closes.attrs.get("calendar", "XNYS") != "XNYS":
+        return pending("unsupported_calendar",
+                       f"{prediction.ticker} isn't listed on a venue verified to follow the NYSE calendar, "
+                       "so its trading days can't be counted reliably.")
     try:
         calendar = xcals.get_calendar("XNYS")
         session = pd.Timestamp(start)
         if not calendar.is_session(session):
-            return refuse("data date is not an exchange session")
+            name = _holiday_names(calendar, session, session).get(start)
+            why = f"a market holiday ({name})" if name else "a weekend or market holiday"
+            return pending("not_a_session", f"The data date {start} was {why}, so the horizon can't be counted from it.")
         target = calendar.session_offset(session, prediction.horizon_days)
         resolved_on = target.date()
         settled_at = calendar.session_close(target) + pd.Timedelta(minutes=30)
     except (ValueError, KeyError, IndexError) as exc:
-        return refuse(f"exchange session unavailable: {exc}")
+        return pending("calendar_unavailable",
+                       f"The NYSE calendar doesn't cover these dates yet ({type(exc).__name__}).")
     if pd.Timestamp(now) < settled_at:
-        return None
+        settled_local = settled_at.tz_convert(MARKET_TZ)
+        return pending(
+            "horizon_open",
+            f"The {prediction.horizon_days}-trading-day horizon ends on {resolved_on} ({resolved_on:%A}); "
+            f"it is scored after {settled_local:%H:%M} ET that day, once the close has settled."
+            + _closures(calendar, session, target),
+            settled_at.tz_convert(MARKET_TZ).to_pydatetime(),
+        )
     if not closes.index.is_unique:
-        return refuse("duplicate daily bars")
+        return pending("duplicate_bars", "The provider returned two prices for the same day.")
     required = [s.date() for s in calendar.sessions_in_range(session, target)]
-    if any(d not in closes.index for d in required):
-        return refuse("missing required exchange-session bar")
+    missing = [d for d in required if d not in closes.index]
+    if missing:
+        return pending(
+            "missing_bar",
+            f"No closing price for {', '.join(map(str, missing))}, although the NYSE was scheduled to trade: "
+            "either a gap in the provider's data or an unscheduled closure. It stays pending rather than "
+            "scoring against a different day; rerun later.",
+        )
     if any(not math.isfinite(float(closes.loc[d])) or float(closes.loc[d]) <= 0 for d in required):
-        return refuse("invalid daily price")
+        return pending("invalid_price", "A required closing price is missing or not positive (not finalised yet?).")
     if not math.isfinite(prediction.last_price) or prediction.last_price <= 0:
-        return refuse("invalid logged reference price")
+        return pending("invalid_reference", "The logged entry price is missing or not positive.")
     price = float(closes.loc[resolved_on])
     basis = closes.attrs.get("price_basis", "prediction_share_basis")
     split_factor = 1.0
     if basis == "yahoo_split_adjusted_close":
         if not closes.attrs.get("actions_verified"):
-            return refuse("corporate-action history is unavailable")
+            return pending("corporate_actions",
+                           "The provider didn't return split history, so prices can't be put on the logged share basis.")
         # Yahoo's Close is retrospectively split-adjusted even with auto_adjust=False.
         # Restore ALL splits after entry, including those after the outcome date.
         splits = closes.attrs.get("stock_splits")
         if not isinstance(splits, dict):
-            return refuse("corporate-action history is malformed")
+            return pending("corporate_actions", "The provider's split history is malformed.")
         for split_date, ratio in splits.items():
             try:
                 action_date = date.fromisoformat(split_date)
                 ratio = float(ratio)
             except (TypeError, ValueError):
-                return refuse("invalid split action")
+                return pending("corporate_actions", "The provider's split history has an unreadable entry.")
             if not math.isfinite(ratio) or ratio <= 0:
-                return refuse("invalid split ratio")
+                return pending("corporate_actions", "The provider's split history has an invalid ratio.")
             if action_date > start:
                 split_factor *= ratio
         price *= split_factor
     elif basis != "prediction_share_basis":
-        return refuse("unknown price adjustment basis")
+        return pending("unknown_basis", "The price series doesn't say how it is adjusted.")
     ret = price / prediction.last_price - 1
     if not math.isfinite(ret):
-        return refuse("invalid adjusted return")
+        return pending("invalid_price", "The adjusted return isn't a finite number.")
     return Outcome(
         prediction=prediction,
         resolved_on=resolved_on,
@@ -171,6 +227,12 @@ def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome
         reference_price=prediction.last_price,
         split_factor=split_factor,
     )
+
+
+def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome | None:
+    """`assess` without the reason: the Outcome, or None while it can't be scored."""
+    result = assess(prediction, closes, now)
+    return result if isinstance(result, Outcome) else None
 
 
 def _rate(hits: Iterable[bool]) -> float | None:
@@ -193,6 +255,7 @@ class Report:
     by_mode: dict[str, float | None] = field(default_factory=dict)  # persona votes per reasoning mode
     by_model: dict[str, float | None] = field(default_factory=dict)
     strategy_weights: dict[str, float] = field(default_factory=dict)  # for --weights auto
+    pending_details: list[Pending] = field(default_factory=list)  # why each pending one waits
 
 
 def derive_strategy_weights(
@@ -220,12 +283,10 @@ def score(
     closes_by_ticker: dict[str, pd.Series],
     now: datetime,
 ) -> Report:
-    outcomes = []
+    outcomes, waiting = [], []
     for p in predictions:
-        closes = closes_by_ticker.get(p.ticker)
-        outcome = resolve(p, closes, now) if closes is not None else None
-        if outcome is not None:
-            outcomes.append(outcome)
+        result = assess(p, closes_by_ticker.get(p.ticker), now)
+        (outcomes if isinstance(result, Outcome) else waiting).append(result)
 
     baseline_names = sorted({name for o in outcomes for name in o.prediction.baselines})
     accuracy = {"personas": _rate(o.prediction.direction == o.actual for o in outcomes)}
@@ -272,6 +333,7 @@ def score(
         by_mode={m: _rate(v) for m, v in sorted(votes_by_mode.items())},
         by_model={m: _rate(v) for m, v in sorted(votes_by_model.items())},
         strategy_weights=derive_strategy_weights(votes_by_strategy),
+        pending_details=waiting,
     )
 
 

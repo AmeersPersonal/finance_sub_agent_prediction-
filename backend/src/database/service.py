@@ -278,5 +278,11 @@ async def evaluate_prediction(prediction_id: str) -> dict:
             repo.save_evaluations(report)
             return repo.get_evaluations(prediction_id)
     evaluations = await asyncio.to_thread(save)
-    return {"prediction_id": prediction_id, "pending": report.pending > 0,
-            "scored": report.scored, "evaluations": evaluations}
+    result = {"prediction_id": prediction_id, "pending": report.pending > 0,
+              "scored": report.scored, "evaluations": evaluations}
+    if report.pending_details:
+        waiting = report.pending_details[0]
+        result["pending_reason"] = waiting.reason
+        result["pending_detail"] = waiting.detail
+        result["retry_after"] = waiting.retry_after.isoformat() if waiting.retry_after else None
+    return result

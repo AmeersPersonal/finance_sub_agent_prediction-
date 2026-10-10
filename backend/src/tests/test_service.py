@@ -242,6 +242,10 @@ def test_missing_evaluation_does_not_fetch(monkeypatch, repository):
 def test_pending_evaluation_has_no_invented_outcome(monkeypatch, repository):
     repository.loaded = SimpleNamespace(ticker='TEST', data_as_of='2026-10-09')
     monkeypatch.setattr(service, 'fetch_closes', lambda *_: {})
-    monkeypatch.setattr(service, 'score', lambda *_: SimpleNamespace(pending=1, scored=0))
+    retry = datetime(2026, 10, 16, 16, 30, tzinfo=timezone.utc)
+    waiting = SimpleNamespace(reason='horizon_open', detail='The horizon ends on 2026-10-16.', retry_after=retry)
+    monkeypatch.setattr(service, 'score', lambda *_: SimpleNamespace(pending=1, scored=0, pending_details=[waiting]))
     assert asyncio.run(service.evaluate_prediction('pending')) == {
-        'prediction_id': 'pending', 'pending': True, 'scored': 0, 'evaluations': []}
+        'prediction_id': 'pending', 'pending': True, 'scored': 0, 'evaluations': [],
+        'pending_reason': 'horizon_open', 'pending_detail': 'The horizon ends on 2026-10-16.',
+        'retry_after': retry.isoformat()}

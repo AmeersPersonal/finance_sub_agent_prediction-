@@ -8,10 +8,11 @@ from ai.evaluation import (
     baselines,
     derive_strategy_weights,
     load_log,
+    Pending,
+    assess,
     log_prediction,
     resolve,
     score,
-    split_factor,
 )
 from ai.schemas import PersonaResult, PersonaView, Prediction
 
@@ -56,28 +57,32 @@ def test_resolve_uses_the_close_n_trading_days_later():
 
 def test_resolve_converts_the_logged_price_across_a_split():
     # Logged at 400 before a 4:1 split; Yahoo's history shows every close in post-split units.
-    split_on = date(2026, 10, 13)
-    splits = pd.Series(0.0, index=closes(0).index)
-    splits[split_on] = 4.0
+    values = _session_closes(100.0, 103.0)
     prediction = make_prediction(last_price=400.0)
-    outcome = resolve(prediction, closes(103.0), at("2026-10-20", 12), splits)
+    outcome = resolve(prediction, yahoo_closes(values, {"2026-10-13": 4.0}), at("2026-10-20", 12))
     assert outcome.return_pct == 3.0 and outcome.actual == "up"
-    # Without the split data the same prediction would look like a 74% crash.
-    assert resolve(prediction, closes(103.0), at("2026-10-20", 12)).actual == "down"
+    # Read as if it were already in the logged share basis, it would look like a 74% crash.
+    plain = pd.Series({date.fromisoformat(d): v for d, v in values.items()})
+    assert resolve(prediction, plain, at("2026-10-20", 12)).actual == "down"
 
 
-def test_split_factor_only_counts_splits_after_the_data_date():
-    splits = pd.Series({date(2026, 10, 9): 2.0, date(2026, 10, 13): 4.0, date(2026, 10, 14): 0.0})
-    assert split_factor(splits, date(2026, 10, 9)) == 4.0  # the 10-09 split was already priced in
-    assert split_factor(splits, date(2026, 10, 8)) == 8.0
-    assert split_factor(pd.Series({date(2026, 10, 13): 0.1}), date(2026, 10, 9)) == 0.1  # reverse
-    assert split_factor(None, date(2026, 10, 9)) == 1.0
+@pytest.mark.parametrize("splits, factor", [
+    ({"2026-10-09": 2.0, "2026-10-13": 4.0}, 4.0),  # a split on the data date is already priced in
+    ({"2026-10-08": 2.0, "2026-10-13": 4.0}, 4.0),  # ...and so is one before it
+    ({"2026-10-13": 0.1}, 0.1),                     # reverse split
+    ({}, 1.0),
+])
+def test_only_splits_after_the_data_date_count(splits, factor):
+    values = _session_closes(100.0, 103.0)
+    outcome = resolve(make_prediction(last_price=100.0 * factor), yahoo_closes(values, splits),
+                      at("2026-10-20", 12))
+    assert outcome.split_factor == factor and outcome.return_pct == 3.0
 
 
-def test_score_passes_splits_through():
-    splits = {"TEST": pd.Series({date(2026, 10, 13): 2.0})}
-    report = score([make_prediction(last_price=200.0)], {"TEST": closes(105.0)},
-                   at("2026-10-20", 12), splits)
+def test_score_passes_split_history_through():
+    report = score([make_prediction(last_price=200.0)],
+                   {"TEST": yahoo_closes(_session_closes(100.0, 105.0), {"2026-10-13": 2.0})},
+                   at("2026-10-20", 12))
     assert report.outcomes[0].return_pct == 5.0
 
 
@@ -273,3 +278,42 @@ def test_fetch_closes_reads_exchange_from_mapping_metadata(monkeypatch):
     series = fetch_closes(["TEST"], date(2026, 10, 5))["TEST"]
     assert series.attrs["calendar"] == "XNYS"
     assert series.attrs["actions_verified"] is True
+
+
+def test_pending_reason_names_holidays_and_early_closes():
+    # Thanksgiving 2026-11-26 closed, 11-27 closes at 13:00, so 2 sessions after 11-25 is 11-30.
+    result = assess(make_prediction(data_as_of="2026-11-25", horizon_days=2), closes(100.0),
+                    at("2026-11-27", 12))
+    assert isinstance(result, Pending) and result.reason == "horizon_open"
+    assert "ends on 2026-11-30 (Monday)" in result.detail and "16:30 ET" in result.detail
+    assert "2026-11-26 Thanksgiving" in result.detail
+    assert "2026-11-27 early close at 13:00 ET" in result.detail
+    assert result.retry_after == datetime(2026, 11, 30, 16, 30, tzinfo=MARKET_TZ)
+
+
+def test_pending_reason_for_a_missing_session_bar():
+    result = assess(make_prediction(), closes(103.0).drop(date(2026, 10, 14)), at("2026-10-20", 12))
+    assert result.reason == "missing_bar"
+    assert "No closing price for 2026-10-14" in result.detail
+    assert "unscheduled closure" in result.detail
+
+
+@pytest.mark.parametrize("prediction, series, reason, words", [
+    (make_prediction(data_as_of="2026-11-26"), closes(100.0), "not_a_session", "Thanksgiving"),
+    (make_prediction(data_as_of="2026-10-10"), closes(100.0), "not_a_session", "weekend"),
+    (make_prediction(), None, "no_price_data", "no history for TEST"),
+    (make_prediction(), yahoo_closes(_session_closes(1.0, 1.0), {}, verified=False),
+     "corporate_actions", "split history"),
+])
+def test_pending_reasons_explain_themselves(prediction, series, reason, words):
+    result = assess(prediction, series, at("2026-12-01", 12))
+    assert result.reason == reason and words in result.detail
+
+
+def test_score_lists_why_each_prediction_is_pending():
+    waiting = make_prediction(data_as_of="2026-10-16")
+    report = score([make_prediction(), waiting, make_prediction(ticker="NODATA")],
+                   {"TEST": closes(103.0)}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.pending == 2
+    assert [(p.prediction.ticker, p.reason) for p in report.pending_details] == [
+        ("TEST", "horizon_open"), ("NODATA", "no_price_data")]

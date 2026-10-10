@@ -251,9 +251,24 @@ def render(p: Prediction) -> str:
     return "\n".join(lines)
 
 
+def render_pending(r: Report, limit: int = 20) -> list[str]:
+    """Why each unscored prediction is still waiting (holidays, missing bars, ...)."""
+    if not r.pending_details:
+        return []
+    lines = ["", "Pending, and why:"]
+    for p in r.pending_details[:limit]:
+        lines.append(f"  {p.prediction.ticker:<6} {p.prediction.data_as_of} +{p.prediction.horizon_days}d  {p.detail}")
+    if len(r.pending_details) > limit:
+        lines.append(f"  ... and {len(r.pending_details) - limit} more")
+    return lines
+
+
 def render_report(r: Report) -> str:
     if not r.scored:
-        return f"No predictions have resolved yet ({r.pending} pending, {r.unreadable} unreadable)."
+        return "\n".join(
+            [f"No predictions have resolved yet ({r.pending} pending, {r.unreadable} unreadable)."]
+            + render_pending(r)
+        )
     lines = [
         f"Scored {r.scored} predictions ({r.pending} pending, {r.unreadable} unreadable). "
         "Small samples are noisy; treat fewer than ~50 as anecdotes.",
@@ -278,6 +293,7 @@ def render_report(r: Report) -> str:
     if r.strategy_weights:
         lines += ["", "Suggested strategy weights (applied by --weights auto):"]
         lines += [f"  {s:<15} {w:.3f}" for s, w in r.strategy_weights.items()]
+    lines += render_pending(r)
     return "\n".join(lines)
 
 
