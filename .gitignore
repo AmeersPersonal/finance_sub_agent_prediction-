@@ -42,6 +42,9 @@ faiss_index/
 *.faiss
 *.sqlite3
 
+# Local prediction log (python main.py appends here; python main.py --score reads it)
+backend/data/
+
 # ---------------------------------------------------------------------------
 # Python
 # ---------------------------------------------------------------------------

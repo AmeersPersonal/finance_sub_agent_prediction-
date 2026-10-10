@@ -1,0 +1,1 @@
+#this file is for comapny info and validation
