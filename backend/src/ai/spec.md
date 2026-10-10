@@ -35,7 +35,8 @@ scoring the results later.
 | `confidence_score.py` | Strategy-balanced vote -> up / down / flat / unclear + strength |
 | `evaluation.py` | Baselines (always-up, momentum, regression), prediction log, scorer (split-aware), derived strategy weights |
 | `rag_retrieval.py` | Keyword retrieval over `docs/` (.md / .txt) and age-profile overrides |
-| `schemas.py` | `PersonaView`, `PersonaResult`, `Prediction` (pydantic; `quote_source` and `audit` are optional so old log lines load) |
+| `features.py` | `extract_features`: flattens the strategy packets, regression output and sentiment into one numeric row (`Prediction.features`), logged for the stacker in `ml/` |
+| `schemas.py` | `PersonaView`, `PersonaResult`, `Prediction` (pydantic; `quote_source`, `features` and `audit` are optional so old log lines load) |
 | `test.py` | empty; to be deleted |
 | `docs/` | Private source documents; contents gitignored, only `.gitkeep` tracked |
 

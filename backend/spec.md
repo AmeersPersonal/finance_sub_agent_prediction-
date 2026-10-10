@@ -27,6 +27,7 @@ backend/
 ├── .venv/          # local virtualenv, gitignored
 ├── data/           # runtime output, gitignored
 │   ├── predictions.jsonl     # prediction log (appended by the CLI and API, read by --score)
+│   ├── models/               # python -m ml ... --save: <name>-<time>.joblib + .json sidecar
 │   └── cache/bls_<date>.json # BLS keyless limit is 25 requests/day, so cached daily; kept 7 days
 └── src/            # all application code; see src/spec.md
 ```
@@ -43,9 +44,13 @@ backend/
 - Dependencies: `src/requirements.txt` lists direct dependencies pinned with
   `==`; `src/requirements.lock` pins every transitive dependency with hashes.
   After changing `requirements.txt`, regenerate the lock from `backend/src/`
-  with `pip-compile --generate-hashes --strip-extras --no-emit-index-url
-  --output-file requirements.lock requirements.txt` (pip-tools, installed
-  outside the project venv), and install reproducibly with
-  `pip install --require-hashes -r requirements.lock`. The lock was resolved on
+  with `pip-compile --generate-hashes --allow-unsafe --strip-extras
+  --no-emit-index-url --output-file requirements.lock requirements.txt`
+  (pip-tools, installed outside the project venv; `--allow-unsafe` pins
+  `setuptools`, which `torch` needs), and install reproducibly with
+  `pip install --require-hashes -r requirements.lock`. The lock pins PyPI's
+  CPU-only `torch` wheel; for the GPU, reinstall it afterwards from the CUDA
+  index (`pip install torch==2.12.0 --index-url
+  https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps`). The lock was resolved on
   Windows / Python 3.13; it carries hashes for every platform's wheels, but a
   dependency that only some platforms need would be missing on the others.

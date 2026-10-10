@@ -23,6 +23,7 @@ the same pipeline. Everything else is a package.
 | `ai/` | LLM pipeline: fetch, sentiment, personas, aggregation, evaluation, live quotes (`ai/spec.md`) |
 | `audit/` | Explains a prediction: company overview, data checks, risk checklist, news digest (`audit/spec.md`) |
 | `finance/` | Pure numeric functions, no LLM, no network (`finance/spec.md`) |
+| `ml/` | Learned models (price classifier, persona stacker, calibration) behind walk-forward gates; `python -m ml` (`ml/spec.md`) |
 | `oauth/` | Google OIDC sign-in routes and in-memory sessions (`oauth/spec.md`) |
 | `tests/` | Offline test suite (`tests/spec.md`) |
 | `requirements.txt` | Direct dependencies, pinned (`==`) |
@@ -49,7 +50,8 @@ main.py / api/app.py
 
 ## Dependency direction
 
-`main.py, api/ -> audit -> ai -> finance`, and `api/ -> oauth`. `finance/`
-never imports `ai/`; `ai/` never imports `audit/`; `oauth/` imports nothing
-from the pipeline. Only `ai/llm.py` talks to the model provider. `tests/` may
+`main.py, api/ -> audit -> ai -> finance`, `ml -> ai, finance`, and
+`api/ -> oauth`. `finance/` never imports `ai/`; `ai/` never imports `audit/`
+or `ml/`; nothing imports `ml/` until a model passes its gate; `oauth/`
+imports nothing from the pipeline. Only `ai/llm.py` talks to the model provider. `tests/` may
 import everything.

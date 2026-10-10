@@ -68,6 +68,7 @@ backend/
     │   ├── confidence_score.py  # strategy-balanced vote -> up/down/flat/unclear + strength
     │   ├── evaluation.py     # baselines, prediction log, split-aware scorer, derived weights
     │   ├── rag_retrieval.py  # keyword retrieval over ai/docs/ (.md/.txt)
+    │   ├── features.py       # flattens the packets into Prediction.features (stacker training rows)
     │   ├── schemas.py        # PersonaView, PersonaResult, Prediction
     │   ├── test.py           # empty; to be deleted
     │   └── docs/             # private documents, contents gitignored
@@ -87,6 +88,12 @@ backend/
     │   ├── positioning.py    # insiders, institutions, short interest, analysts (point-in-time)
     │   ├── macro.py          # yield curve, CPI, unemployment, payrolls
     │   └── revenue_forecast.py  # revenue trend; naive extrapolation, labelled not a forecast
+    ├── ml/                   # learned models, gated on walk-forward results (ml/spec.md); python -m ml
+    │   ├── dataset.py        # rows labelled like the scorer: price rows (model A), scored personas (B)
+    │   ├── model.py          # logistic, LightGBM, PyTorch MLP (CUDA if present), one interface
+    │   ├── walkforward.py    # purged expanding-window evaluation, baselines, metrics, gates
+    │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
+    │   └── store.py          # save/load under data/models/ with a sidecar JSON
     ├── oauth/                # Google OIDC sign-in (code + PKCE), in-memory sessions
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
@@ -99,6 +106,7 @@ From `backend/`:
 python -m venv .venv
 .venv\Scripts\activate            # Windows (source .venv/bin/activate elsewhere)
 pip install -r src/requirements.txt  # or: pip install --require-hashes -r src/requirements.lock
+pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps  # GPU build
 copy .env.example .env            # then set GEMINI_API_KEY
 ```
 
@@ -115,6 +123,9 @@ python main.py AAPL --live --audit                    # websocket price; checks,
 python main.py AAPL --json --no-log
 python main.py --score                                # accuracy vs baselines, once horizons pass
 python main.py SPY --backtest [--features a,b,c]      # regression walk-forward only, no LLM
+python -m ml price [--target relative]                # model A walk-forward + gate (ml/spec.md)
+python -m ml stacker                                  # model B; needs ~300 scored predictions
+python -m ml coverage                                 # accuracy at coverage, strength calibration
 uvicorn api.app:app --reload                          # HTTP API, docs at /docs
 pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage

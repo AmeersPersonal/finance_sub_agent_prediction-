@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from ai.agents import PROMPT_VERSION, build_context, horizon_info, run_persona, strategy_documents
 from ai.confidence_score import aggregate
 from ai.evaluation import baselines
+from ai.features import extract_features
 from ai.live import LiveFeed, apply_live_quote
 from ai.llm import GeminiLLM, JsonLLM
 from ai.modes import DEFAULT_MODE, ReasoningMode
@@ -119,6 +120,11 @@ async def predict(
         linear_regression=dataclasses.asdict(regression) if regression else None,
         headline_sentiment=sentiment,
         risk=risk,
+        features=extract_features(
+            {s.value: c for s, c in contexts.items()},
+            dataclasses.asdict(regression) if regression else None,
+            sentiment,
+        ),
         generated_at=datetime.now(timezone.utc),
         model=llm.model,
         prompt_version=PROMPT_VERSION,

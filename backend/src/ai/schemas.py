@@ -72,6 +72,10 @@ class Prediction(BaseModel):
     risk: dict[str, Any] | None = Field(
         default=None, description="ATR-based stop distance and position size for a 1% risk budget"
     )
+    features: dict[str, float | None] | None = Field(
+        default=None,
+        description="Numeric inputs the personas saw, logged to train the stacker (ml/spec.md)",
+    )
     generated_at: datetime
     model: str
     prompt_version: str

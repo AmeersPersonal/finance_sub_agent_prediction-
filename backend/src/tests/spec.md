@@ -22,6 +22,8 @@ Fast, fully offline test suite. Nothing here may touch the network or Gemini.
 | `test_pipeline.py` | `predict()` end to end with the fake LLM, including multi-mode runs; packets; prompt changelog |
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
 | `test_evaluation.py` | baselines, log, scorer, stock splits, derived strategy weights |
+| `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
+| `test_ml.py` | `ml/`: labels match the scorer, no future data in features or training, metrics, the three models (MLP on CPU), store round trip, model B and `--weights auto` replay, coverage and calibration, `python -m ml` with fetches stubbed |
 | `test_llm.py` | `GeminiLLM` retries, backoff and give-up, against a fake genai client |
 | `test_live.py` | websocket live quote: first tick, timeout, dropped connection, fallback |
 | `test_cli.py` | `main.py`: argument errors, `--weights`, `--backtest`, rendering, predict + log |
