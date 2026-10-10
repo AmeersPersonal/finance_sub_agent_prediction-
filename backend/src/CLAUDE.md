@@ -28,7 +28,9 @@ Personas are **strategy × age band** (16–65):
 | `index_options` | Beta and relative strength vs S&P 500, sector ETF and Nasdaq-100; VIX; put/call ratios, ATM IV vs realized vol; short interest and its change; yields, CPI, unemployment, payrolls; headlines + sentiment score | 18–24, 25–39, 40–54, 55–65 |
 
 Deliberately not included (no free source): order-book depth / order flow
-(needs a paid Level 2 feed), social-media sentiment, IV rank (needs IV
+(needs a paid Level 2 feed), social-media sentiment (Reddit's Responsible
+Builder Policy requires approval and bars sharing its data, e.g. with Gemini;
+Hacker News threads are evidence passages, not a score), IV rank (needs IV
 history), GDP and the 2-year yield (FRED needs a key; its keyless CSV endpoint
 timed out from this network).
 
@@ -72,7 +74,7 @@ backend/
     │   ├── macro.py          # yield curve, CPI, unemployment, payrolls
     │   └── revenue_forecast.py
     ├── api/                  # localhost FastAPI routes
-    ├── sources/              # linked RSS evidence and optional SEC filing text
+    ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
     ├── audit/                # source digest and educational risk explanations
     ├── database/             # migrations, repository, orchestration, setup/docs
     ├── oauth/                # auth placeholder; not imported by the dashboard API
@@ -103,7 +105,7 @@ pytest
 
 Environment variables: `GEMINI_API_KEY` for real predictions, optional
 `GEMINI_MODEL` (default `gemini-3.5-flash-lite`), `DATABASE_URL` for database
-operations, optional `SEC_USER_AGENT` for full primary SEC filings, and optional
+operations, optional `SEC_USER_AGENT` for SEC filings and 8-K press releases, and optional
 `API_CORS_ORIGINS` for local frontend development.
 
 ## Hard rules
@@ -182,11 +184,15 @@ then saves the prediction and supplied evidence atomically. Do not route the API
 through the JSONL-only path. `refresh_market` collects sources without Gemini.
 
 Source IDs cited by an agent are distinct from passages supplied to it. Preserve
-both. RSS descriptions are excerpts, not complete articles or representative
-public opinion. SEC primary text is opt-in through a real application/contact
-identifier. Semantic vector retrieval, Reddit, frontend wiring, and account
-integration are not implemented. Record prompt changes in `ai/spec.md`; current
-version 4 adds provided online sources and citations.
+both. RSS descriptions are excerpts and Google News items are headlines, not
+complete articles or representative public opinion. Hacker News threads (keyless,
+always on) are tech-skewed discussion, not a sample of investors. SEC text is opt-in through a
+real application/contact identifier. Reddit was removed: its Responsible Builder
+Policy requires approval first and forbids sharing its data. Every document has a role
+(`company_info`, `public_opinion`, `product_event`) shown in the prompt, and
+retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
+retrieval, frontend wiring, and account integration are not implemented. Record
+prompt changes in `ai/spec.md`; current version 6 adds Hacker News threads.
 
 `database/SETUP.md` describes the project-owned local PostgreSQL and API user
 services. Service files, cluster files, and credentials stay gitignored. Use

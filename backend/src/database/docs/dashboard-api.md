@@ -40,10 +40,13 @@ systemctl --user restart hack-knight-api.service
    ends, the forecast remains pending. Read `/predictions/{id}/evaluation` for
    saved evaluations.
 
-News ingestion collects feed excerpts/headlines. Full primary SEC filing text
-is optional: configure `SEC_USER_AGENT` with your application name and real
-contact email. This is not an API key. It does not enable full publisher article
-scraping or Reddit ingestion.
+News ingestion collects Yahoo feed excerpts, Google News headlines and Hacker
+News threads (top comments on stories naming the company). Full
+SEC filing text and 8-K press releases are optional: configure
+`SEC_USER_AGENT` with your application name and real contact email. This is
+not an API key. Reddit is not collected (its API policy requires approval and
+forbids sharing its data). Publisher articles are never scraped. Each source in a
+prediction carries its `role` (company_info, public_opinion, product_event).
 
 The service uses keyword RAG: retrieve relevant saved passages, provide them to
 Gemini, and preserve the evidence. Source IDs actually cited by personas are

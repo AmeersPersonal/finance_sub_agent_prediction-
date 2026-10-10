@@ -18,8 +18,8 @@ location; TimescaleDB is an optional PostgreSQL extension for price history.
 - The core schema is applied. The user service starts at login.
 - Forecast storage and evaluation work through the `--database` CLI option.
 - TimescaleDB has not been enabled; it is not needed to continue development.
-- Linked RSS evidence, optional SEC filings, keyword retrieval, and dashboard API routes are implemented.
-- Semantic vector retrieval, Reddit ingestion, and the frontend integration are future work.
+- Linked RSS evidence (Yahoo, Google News), Hacker News threads, optional SEC filings and 8-K press releases, role-mixed keyword retrieval, and dashboard API routes are implemented.
+- Semantic vector retrieval and the frontend integration are future work.
 - [Dashboard walkthrough](dashboard-api.md) shows how to use the routes.
 
 The private connection is in `backend/.env`. Database files live in

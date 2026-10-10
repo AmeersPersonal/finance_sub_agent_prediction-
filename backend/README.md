@@ -17,5 +17,6 @@ Start with the [simple database guides](src/database/docs/README.md) and
 
 The local setup uses PostgreSQL, not TimescaleDB. The API runs on localhost;
 frontend integration and authentication remain separate work. News ingestion
-uses linked feed excerpts; full SEC primary filings are optional. Retrieval is
+uses linked feed excerpts and headlines plus Hacker News threads; SEC filings and 8-K press
+releases are optional. Retrieval is
 keyword-based RAG, not semantic vector search.
