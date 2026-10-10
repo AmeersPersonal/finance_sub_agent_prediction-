@@ -222,7 +222,14 @@ optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
   valuation, statements, ownership and options data are today's values, so they
   can't be backtested at all.
 - **Log stays comparable.** Each record carries `model` and `prompt_version`;
-  bump `PROMPT_VERSION` in `agents.py` whenever prompts or packets change.
+  bump `PROMPT_VERSION` in `agents.py` whenever prompts or packets change, and
+  say what changed in `PROMPT_CHANGELOG` (a test enforces an entry per version).
+- **Version numbers are claimed on `main` only.** Two branches once both used
+  4 and 5 for different prompts, so "version 5" meant two things. On a feature
+  branch, describe the change in the changelog under the next number but treat
+  that number as provisional; when merging, renumber to the next version not yet
+  on `main` (or on the branch being merged into) and merge colliding entries.
+  Never reuse a number that a logged or stored prediction already carries.
 - **Strength isn't probability.** Check `--score`'s by-strength table before
   presenting strength as a percentage chance.
 - **Scoring restates prices to the logged share basis.** Yahoo closes are
