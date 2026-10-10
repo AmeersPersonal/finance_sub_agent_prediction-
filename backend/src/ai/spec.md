@@ -46,6 +46,7 @@ scoring the results later.
 ## Prompt history
 
 - Version 3: strategy-specific numeric packets and volatility-sized direction question.
+- Version 5: each passage shows its role (company info, public opinion, product event) and an "unconfirmed" mark for rumor/leak wording; the system prompt explains the labels. Retrieval now gives every strategy a mix of the three roles, so packets change too.
 - Version 4: supplied online passages with coverage labels, source IDs, and untrusted-evidence handling. Invalid citation IDs are discarded. Database-backed forecasts retrieve sources through `database.service`; direct `predict()` retains injectable documents and the local retrieval fallback.
 
 For database-backed forecasts, `regression_daily` is the frozen `model_datasets` copy of the same daily snapshot the personas saw (`database.datasets`). Direct `predict()` calls still default to `snapshot.daily`. News and persona opinions are not regression features.

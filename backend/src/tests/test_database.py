@@ -296,3 +296,44 @@ def test_evaluations_are_append_only(db, snapshot, fake_llm):
         db.execute("UPDATE evaluations SET correct = NOT correct WHERE id = %s", (row["id"],))
     with pytest.raises(psycopg.Error):
         db.execute("DELETE FROM evaluations WHERE id = %s", (row["id"],))
+
+
+def test_retrieval_filters_by_evidence_role(db):
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    ids = {}
+    for role, text in [("company_info", "Revenue guidance in the press release"),
+                       ("public_opinion", "Analysts debate revenue guidance"),
+                       (None, "Revenue guidance from an unclassified note")]:
+        ids[role] = repo.store_document(
+            source_url=f"https://example.com/{role}", title=str(role), content_text=text,
+            document_type="news", first_seen_at=cutoff - timedelta(days=1), symbols=["TEST"],
+            classification={"role": role} if role else {})
+        repo.store_chunks(ids[role], [text])
+    assert [r["document_id"] for r in repo.retrieve_passages(
+        "TEST", "revenue", cutoff=cutoff, role="company_info")] == [ids["company_info"]]
+    assert repo.retrieve_passages("TEST", "revenue", cutoff=cutoff, role="product_event") == []
+    # Unclassified documents count as "other", and no role means every role.
+    assert [r["document_id"] for r in repo.retrieve_passages(
+        "TEST", "revenue", cutoff=cutoff, role="other")] == [ids[None]]
+    assert len(repo.retrieve_passages("TEST", "revenue", cutoff=cutoff)) == 3
+    # The recency fallback respects the role too.
+    fallback = repo.retrieve_passages("TEST", "volatility", cutoff=cutoff, role="public_opinion")
+    assert [r["document_id"] for r in fallback] == [ids["public_opinion"]]
+
+
+def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):
+    repo = DatabaseRepository(db)
+    cutoff = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    ids = []
+    for i, text in enumerate(["Revenue guidance raised", "New phone colours", "CEO interview"]):
+        ids.append(repo.store_document(
+            source_url=f"https://example.com/{i}", title=text, content_text=text, document_type="news",
+            first_seen_at=cutoff - timedelta(hours=10 - i), symbols=["TEST"]))
+        repo.store_chunks(ids[-1], [text])
+    assert [r["document_id"] for r in repo.retrieve_passages("TEST", "revenue", cutoff=cutoff)] == [ids[0]]
+    filled = repo.retrieve_passages("TEST", "revenue", cutoff=cutoff, fill=True)
+    # The match ranks first; the rest are the newest non-matching passages, without repeats.
+    assert [r["document_id"] for r in filled] == [ids[0], ids[2], ids[1]]
+    assert filled[0]["relevance"] > 0 and filled[1]["relevance"] == 0
+    assert len(repo.retrieve_passages("TEST", "revenue", cutoff=cutoff, limit=2, fill=True)) == 2

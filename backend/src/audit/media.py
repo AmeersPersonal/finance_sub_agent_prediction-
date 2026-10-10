@@ -9,5 +9,6 @@ def source_digest(sources: list[dict]) -> list[dict]:
             continue
         seen.add(source['document_id'])
         result.append({'title': source['title'], 'url': source['url'],
-                       'coverage': source['content_kind'], 'published_at': source['published_at']})
+                       'coverage': source['content_kind'], 'role': source.get('role', 'other'),
+                       'published_at': source['published_at']})
     return result

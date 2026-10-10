@@ -25,6 +25,8 @@ class Snippet:
     url: str | None = None
     title: str | None = None
     content_kind: str | None = None
+    role: str | None = None  # company_info / public_opinion / product_event; None for local docs
+    unconfirmed: bool = False  # rumor or leak wording
 
     @property
     def citation_id(self) -> str:

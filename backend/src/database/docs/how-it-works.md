@@ -49,7 +49,8 @@ articles. Optional SEC collection downloads primary company filing text when
 
 Documents are stored, split into passages, and searched by keywords (any keyword matches; more matches rank higher). Selected
 passages become evidence in Gemini's prompt: this is keyword RAG. Semantic
-vector search, Reddit collection, and general publisher scraping are future work.
+vector search and general publisher scraping are future work. Each strategy
+gets a mix of company info, public opinion and product-event passages.
 
 Keeping the supplied text and dates preserves what the agent saw even if the
 original page changes. Missing sources produce warnings rather than invented

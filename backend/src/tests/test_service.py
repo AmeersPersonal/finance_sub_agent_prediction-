@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ai.agents import DOC_QUERIES
 from ai.personas import Strategy
 from ai.schemas import PersonaView
 from database import service
@@ -147,6 +148,27 @@ def test_evidence_reaches_prompt_and_tracks_supplied_vs_cited(
     assert saved['price_rows'][-1]['close'] == pytest.approx(float(snapshot.daily['Close'].iloc[-1]))
 
 
+def test_prompt_labels_each_passage_role(monkeypatch, repository, offline_sources, fake_llm):
+    at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    repository.passages = [
+        dict(document_id=1, chunk_id=11, text='Company reports record revenue.',
+             source_url='https://www.sec.gov/ex991.htm', title='Press release', content_kind='full_text',
+             classification={'role': 'company_info'}, published_at=at, first_seen_at=at),
+        dict(document_id=2, chunk_id=21, text='New device reportedly delayed.',
+             source_url='https://news.example/rumor', title='Rumor', content_kind='headline',
+             classification={'role': 'product_event', 'unconfirmed': True},
+             published_at=at, first_seen_at=at),
+    ]
+    p = asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.LONG_TERM],
+                                             age_bands=['18-24'], llm=fake_llm))
+    system, prompt = next((s, u) for s, u in fake_llm.calls if 'Persona:' in s)
+    assert 'labelled with its role' in system
+    assert "[doc-1-chunk-11] Role: company info (the company's own filing or press release)" in prompt
+    assert '[doc-2-chunk-21] Role: product event (launch, announcement or rumor); unconfirmed' in prompt
+    assert [s['role'] for s in p.sources] == ['company_info', 'product_event']
+    assert [n['role'] for n in p.learning['news']] == ['company_info', 'product_event']
+
+
 def test_no_sources_warns_and_still_saves(repository, offline_sources, fake_llm):
     p = asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.DAY_TRADER],
                                              age_bands=['18-24'], llm=fake_llm))
@@ -175,9 +197,39 @@ def test_invalid_request_precedes_external_calls(ticker, horizon, repository, of
 def test_retrieval_windows(repository):
     cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
     service._retrieve('TEST', set(Strategy), cutoff)
-    windows = {args['since'] for _, _, args in repository.retrievals}
-    assert windows == {None, cutoff - timedelta(days=7), cutoff - timedelta(days=90)}
+    windows = {(query, args['role']): args['since'] for _, query, args in repository.retrievals}
+    day, options, long = (DOC_QUERIES[s] for s in (Strategy.DAY_TRADER, Strategy.INDEX_OPTIONS, Strategy.LONG_TERM))
+    assert len(windows) == 9  # every strategy asks for every role
+    assert windows[(day, 'public_opinion')] == cutoff - timedelta(days=7)
+    assert windows[(day, 'product_event')] == cutoff - timedelta(days=7)
+    assert windows[(options, 'public_opinion')] == cutoff - timedelta(days=90)
+    # The latest 10-Q / press release stays relevant past a short news window.
+    assert windows[(day, 'company_info')] == cutoff - timedelta(days=140)
+    assert windows[(options, 'company_info')] == cutoff - timedelta(days=140)
+    assert {windows[(long, role)] for role in service.EVIDENCE_ROLES} == {None}
     assert all(args['cutoff'] == cutoff for _, _, args in repository.retrievals)
+    assert all(args['fill'] for _, _, args in repository.retrievals)
+
+
+def _passages(role, n, start):
+    return [{'chunk_id': start + i, 'role': role} for i in range(n)]
+
+
+def test_mix_roles_round_robins_and_backfills():
+    mixed = service.mix_roles({
+        'company_info': _passages('company_info', 1, 0),
+        'public_opinion': _passages('public_opinion', 5, 10),
+        'product_event': _passages('product_event', 2, 20),
+    }, 6)
+    assert [p['role'] for p in mixed] == [
+        'company_info', 'public_opinion', 'product_event',
+        'public_opinion', 'product_event', 'public_opinion']
+
+
+def test_mix_roles_drops_duplicate_chunks_and_handles_empty():
+    shared = {'chunk_id': 1, 'role': 'public_opinion'}
+    assert service.mix_roles({'public_opinion': [shared], 'product_event': [shared]}, 6) == [shared]
+    assert service.mix_roles({}, 6) == []
 
 
 def test_missing_evaluation_does_not_fetch(monkeypatch, repository):

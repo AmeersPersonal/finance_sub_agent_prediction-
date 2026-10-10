@@ -135,16 +135,44 @@ async def refresh_market(ticker: str) -> dict:
     return result
 
 
+EVIDENCE_ROLES = ("company_info", "public_opinion", "product_event")
+RECENCY_DAYS = {Strategy.DAY_TRADER: 7, Strategy.INDEX_OPTIONS: 90, Strategy.LONG_TERM: None}
+# The latest 10-Q or press release stays the company's current word for a quarter or so.
+COMPANY_INFO_DAYS = 140
+PASSAGES_PER_STRATEGY = 6
+
+
+def mix_roles(candidates: dict[str, list[dict]], limit: int) -> list[dict]:
+    """Round-robin over roles so no single source type fills a strategy's packet.
+
+    A role with too few passages leaves its slots to the others.
+    """
+    mixed, seen = [], set()
+    for rank in range(max((len(v) for v in candidates.values()), default=0)):
+        for role in EVIDENCE_ROLES:
+            items = candidates.get(role, [])
+            if rank < len(items) and items[rank]["chunk_id"] not in seen and len(mixed) < limit:
+                seen.add(items[rank]["chunk_id"])
+                mixed.append(items[rank])
+    return mixed
+
+
 def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
     passages = {}
     with connect() as connection:
         repo = DatabaseRepository(connection)
         for strategy in strategies:
-            days = 7 if strategy == Strategy.DAY_TRADER else 90 if strategy == Strategy.INDEX_OPTIONS else None
-            passages[strategy] = repo.retrieve_passages(
-                ticker, DOC_QUERIES[strategy], cutoff=cutoff,
-                since=cutoff - timedelta(days=days) if days else None, limit=6,
-            )
+            candidates = {}
+            for role in EVIDENCE_ROLES:
+                days = RECENCY_DAYS[strategy]
+                if role == "company_info" and days is not None:
+                    days = max(days, COMPANY_INFO_DAYS)
+                candidates[role] = repo.retrieve_passages(
+                    ticker, DOC_QUERIES[strategy], cutoff=cutoff,
+                    since=cutoff - timedelta(days=days) if days else None,
+                    limit=PASSAGES_PER_STRATEGY, role=role, fill=True,
+                )
+            passages[strategy] = mix_roles(candidates, PASSAGES_PER_STRATEGY)
     return passages
 
 
@@ -164,6 +192,8 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
         strategy: [Snippet(
             source=p["source_url"], text=p["text"], document_id=p["document_id"],
             chunk_id=p["chunk_id"], url=p["source_url"], title=p["title"], content_kind=p["content_kind"],
+            role=(p.get("classification") or {}).get("role"),
+            unconfirmed=bool((p.get("classification") or {}).get("unconfirmed")),
         ) for p in items] for strategy, items in passages.items()
     }
     owns_llm = llm is None
@@ -184,6 +214,7 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
                 "id": citation_id, "document_id": passage["document_id"],
                 "url": passage["source_url"], "title": passage["title"],
                 "content_kind": passage["content_kind"],
+                "role": (passage.get("classification") or {}).get("role", "other"),
                 "published_at": _clean(passage["published_at"]),
                 "first_seen_at": _clean(passage["first_seen_at"]),
                 "strategies": [], "cited_by": [],

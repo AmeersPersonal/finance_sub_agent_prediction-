@@ -106,7 +106,7 @@ def test_predict_end_to_end(snapshot, fake_llm):
     assert "sharpe" in prediction.linear_regression["strategy"]
     assert fake_llm.sentiment_calls == 1 and prediction.headline_sentiment["overall"] == 0.4
     assert prediction.risk["max_position_pct_of_account_risking_1pct"] > 0
-    assert prediction.prompt_version == "4"
+    assert prediction.prompt_version == "5"
     for _, prompt in fake_llm.calls:
         assert _data_block(prompt)["ticker"] == "TEST"  # the data block is valid JSON
         assert f"+/-{prediction.flat_band_pct:g}%" in prompt

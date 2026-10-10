@@ -309,8 +309,14 @@ class DatabaseRepository:
                 )
 
     def retrieve_passages(self, ticker: str, query: str, *, cutoff: datetime,
-                          since: datetime | None = None, limit: int = 6) -> list[dict]:
-        """Rank any matching keyword; use recent passages only if none match."""
+                          since: datetime | None = None, limit: int = 6,
+                          role: str | None = None, fill: bool = False) -> list[dict]:
+        """Rank any matching keyword; use recent passages only if none match.
+
+        `role` restricts to documents classified with that evidence role.
+        `fill` tops keyword matches up to `limit` with the most recent other
+        passages, so a role with one keyword hit still gets its share of slots.
+        """
         # DOC_QUERIES are keyword bags. Remove query operators before binding OR.
         terms = re.findall(r"[^\W_]+", query, flags=re.UNICODE)
         keyword_query = " OR ".join('"' + term + '"' for term in terms)
@@ -321,12 +327,13 @@ class DatabaseRepository:
             WHERE i.symbol = %s AND d.first_seen_at <= %s
             AND (d.published_at IS NULL OR d.published_at <= %s)
             AND (%s::timestamptz IS NULL OR COALESCE(d.published_at, d.first_seen_at) >= %s)
+            AND (%s::text IS NULL OR COALESCE(d.classification->>'role', 'other') = %s)
             ORDER BY d.source_url, d.first_seen_at DESC, d.id DESC
         )"""
         fields = """d.id AS document_id, c.id AS chunk_id, d.source_url, d.title,
             d.content_kind, d.document_type, d.classification,
             d.published_at, d.first_seen_at, left(c.content_text, 1600) AS text"""
-        filters = (ticker.strip().upper(), cutoff, cutoff, since, since)
+        filters = (ticker.strip().upper(), cutoff, cutoff, since, since, role, role)
         with self._transaction():
             matches = self.connection.execute(
                 available + ", search AS (SELECT websearch_to_tsquery('english', %s) AS query), ranked AS ("
@@ -342,16 +349,17 @@ class DatabaseRepository:
                   ORDER BY relevance DESC, first_seen_at DESC, chunk_id LIMIT %s""",
                 (*filters, keyword_query, limit),
             ).fetchall()
-            if matches or limit <= 0:
+            if limit <= 0 or len(matches) >= limit or (matches and not fill):
                 return matches
-            return self.connection.execute(
+            return matches + self.connection.execute(
                 available + ", ranked AS (SELECT " + fields + """,
                     0::real AS relevance,
                     row_number() OVER (PARTITION BY d.id ORDER BY c.chunk_index) AS passage_order
                     FROM available d JOIN document_chunks c ON c.document_id = d.id
+                    WHERE c.id <> ALL(%s)
                 ) SELECT * FROM ranked WHERE passage_order <= 2
                   ORDER BY first_seen_at DESC, chunk_id LIMIT %s""",
-                (*filters, limit),
+                (*filters, [m["chunk_id"] for m in matches], limit - len(matches)),
             ).fetchall()
 
     def save_evidence(self, run_id: str, passage: dict, *, retrieved_at: datetime,
