@@ -21,7 +21,15 @@ T = TypeVar("T", bound=BaseModel)
 class JsonLLM(Protocol):
     model: str
 
-    async def generate_json(self, system: str, prompt: str, schema: type[T]) -> T: ...
+    async def generate_json(
+        self,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        *,
+        temperature: float | None = None,
+        model: str | None = None,
+    ) -> T: ...
 
 
 class GeminiLLM:
@@ -42,17 +50,28 @@ class GeminiLLM:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._max_attempts = max_attempts
 
-    async def generate_json(self, system: str, prompt: str, schema: type[T]) -> T:
+    async def generate_json(
+        self,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        *,
+        temperature: float | None = None,
+        model: str | None = None,
+    ) -> T:
+        """`model` and `temperature` override this client's defaults for one call."""
         config = types.GenerateContentConfig(
             system_instruction=system,
             response_mime_type="application/json",
             response_json_schema=schema.model_json_schema(),
+            temperature=temperature,
         )
+        model_name = model or self.model
         async with self._semaphore:
             for attempt in range(1, self._max_attempts + 1):
                 try:
                     response = await self._client.aio.models.generate_content(
-                        model=self.model, contents=prompt, config=config
+                        model=model_name, contents=prompt, config=config
                     )
                     return schema.model_validate_json(response.text or "")
                 except errors.APIError as exc:

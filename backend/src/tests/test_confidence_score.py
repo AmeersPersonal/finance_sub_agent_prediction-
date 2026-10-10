@@ -65,3 +65,37 @@ def test_strategy_weights_shift_the_call():
 def test_no_views_raises():
     with pytest.raises(ValueError):
         aggregate([PersonaResult(persona_id="a", strategy="a", age_band="x", error="boom")])
+
+
+def moded(persona: str, mode: str, direction: str, conviction: float) -> PersonaResult:
+    return PersonaResult(
+        persona_id=persona,
+        strategy=persona.split(":")[0],
+        age_band="x",
+        mode=mode,
+        view=PersonaView(direction=direction, conviction=conviction, rationale="", key_factors=[]),
+    )
+
+
+def test_extra_modes_do_not_add_weight():
+    # Strategy a is sampled under three modes, b under one: still one vote each.
+    results = [moded("a:1", m, "up", 0.6) for m in ("m1", "m2", "m3")] + [
+        moded("b:1", "m1", "down", 0.6)
+    ]
+    agg = aggregate(results)
+    assert agg.net_score == 0.0 and agg.direction == "unclear"
+    assert agg.by_strategy == {"a": 0.6, "b": -0.6}
+
+
+def test_modes_are_averaged_inside_a_persona():
+    agg = aggregate([moded("a:1", "m1", "up", 0.8), moded("a:1", "m2", "down", 0.4)])
+    assert agg.net_score == pytest.approx(0.2)  # (0.8 - 0.4) / 2
+    assert agg.direction == "up"
+    assert agg.stability == 0.5
+    assert agg.by_mode == {"m1": 0.8, "m2": -0.4}
+
+
+def test_a_failed_mode_is_skipped():
+    failed = PersonaResult(persona_id="a:1", strategy="a", age_band="x", mode="m2", error="boom")
+    agg = aggregate([moded("a:1", "m1", "up", 0.5), failed])
+    assert agg.direction == "up" and agg.stability == 1.0 and list(agg.by_mode) == ["m1"]

@@ -22,6 +22,12 @@ def test_metrics():
     assert summarize(r, 52)["hit_rate"] == 0.5
 
 
+def test_max_drawdown_counts_a_loss_in_the_first_period():
+    # Equity starts at 1.0, so falling to 0.5 right away is a 50% drawdown.
+    assert max_drawdown(np.array([-0.5, 0.2])) == pytest.approx(-0.5)
+    assert max_drawdown(np.array([0.1, 0.2])) == 0.0
+
+
 def test_walk_forward_never_trains_on_unknown_targets():
     rng = np.random.default_rng(1)
     X, y = rng.normal(size=(300, 4)), rng.normal(size=300)

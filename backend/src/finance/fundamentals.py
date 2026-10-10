@@ -22,6 +22,13 @@ def value(frame: pd.DataFrame | None, item: str, year: int = 0) -> float | None:
     return float(raw) if pd.notna(raw) else None
 
 
+def ttm(frame: pd.DataFrame | None, item: str, quarters: int = 4) -> float | None:
+    """Trailing-twelve-month total of a quarterly flow item (revenue, EBIT): the sum
+    of the latest `quarters` quarters, or None if any of them is missing."""
+    values = [value(frame, item, q) for q in range(quarters)]
+    return None if any(v is None for v in values) else sum(values)
+
+
 def ratio(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None or denominator == 0:
         return None

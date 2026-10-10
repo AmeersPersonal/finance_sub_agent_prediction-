@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
-from ai.feeds import fetch_bls, fetch_headlines
+from ai.feeds import NewsItem, fetch_bls, fetch_news
 from finance.macro import YIELD_TICKERS
 
 SP500_PROXY = "SPY"
@@ -66,6 +66,7 @@ class MarketSnapshot:
     balance_sheet: pd.DataFrame | None = None
     cashflow: pd.DataFrame | None = None
     quarterly_income: pd.DataFrame | None = None
+    quarterly_balance: pd.DataFrame | None = None  # newest quarter first
     earnings_history: pd.DataFrame | None = None  # EPS estimate / reported / surprise
     insider_purchases: pd.DataFrame | None = None  # Form 4 summary, last 6 months
     institutional_holders: pd.DataFrame | None = None  # 13F top holders
@@ -74,11 +75,34 @@ class MarketSnapshot:
     price_targets: dict[str, Any] = field(default_factory=dict)
     rating_changes: pd.DataFrame | None = None
     options: OptionsChain | None = None
-    headlines: list[str] = field(default_factory=list)
+    headlines: list[str] = field(default_factory=list)  # titles of `news`
+    news: list[NewsItem] = field(default_factory=list)  # with links, for the audit digest
     earnings_dates: list[date] = field(default_factory=list)
     yields: dict[str, pd.Series] = field(default_factory=dict)  # "3m"/"5y"/"10y" -> percent
     labor: dict[str, pd.Series] = field(default_factory=dict)  # BLS monthly series
     errors: dict[str, str] = field(default_factory=dict)  # source -> why it's missing
+    quote_source: str = "yfinance"  # live.py swaps in a streaming feed's name
+
+
+def fetch_daily(ticker: str, years: int = 5) -> pd.DataFrame:
+    """~`years` of daily OHLCV, split and dividend adjusted, as Yahoo returns it (see
+    `clean_daily`). Empty if Yahoo has none."""
+    return yf.Ticker(ticker.upper()).history(period=f"{years}y", interval="1d", auto_adjust=True)
+
+
+def clean_daily(daily: pd.DataFrame, last_price: float | None = None) -> pd.DataFrame:
+    """Yahoo sometimes returns the latest session with its volume but NaN prices (seen
+    the day after a close, before it finalises the bar). A NaN close silently breaks
+    returns, CAGR and the momentum baseline, so: fill that last bar's missing prices
+    from the quote, which belongs to the same session, and drop any other bar
+    without a close."""
+    if len(daily) and pd.isna(daily["Close"].iloc[-1]) and last_price:
+        daily = daily.copy()
+        row = daily.index[-1]
+        for column in ("Open", "High", "Low", "Close"):
+            if column in daily.columns and pd.isna(daily.at[row, column]):
+                daily.at[row, column] = last_price
+    return daily.dropna(subset=["Close"])
 
 
 def fetch_snapshot(
@@ -100,7 +124,7 @@ def fetch_snapshot(
         return value
 
     stock = yf.Ticker(ticker)
-    daily = attempt("daily", lambda: stock.history(period=period, interval="1d", auto_adjust=True))
+    daily = attempt("daily", lambda: fetch_daily(ticker, years))
     if daily is None:
         raise ValueError(f"No price history for {ticker!r} ({errors['daily']})")
     info = attempt("info", lambda: stock.info) or {}
@@ -125,6 +149,7 @@ def fetch_snapshot(
         "balance_sheet": own("balance_sheet"),
         "cashflow": own("cashflow"),
         "quarterly_income": own("quarterly_income_stmt"),
+        "quarterly_balance": own("quarterly_balance_sheet"),
         "earnings_history": lambda: yf.Ticker(ticker).get_earnings_dates(limit=12),
         "insiders": own("insider_purchases"),
         "institutions": own("institutional_holders"),
@@ -145,11 +170,16 @@ def fetch_snapshot(
         got = {name: future.result() for name, future in futures.items()}
 
     quote = got["quote"] or {}
+    quoted_price = _price(quote.get("last_price"))
+    daily = clean_daily(daily, quoted_price)
+    if daily.empty:
+        raise ValueError(f"No usable closes for {ticker!r}")
+    news = got["news"] or []
     return MarketSnapshot(
         ticker=ticker,
         fetched_at=datetime.now(timezone.utc),
         daily=daily,
-        last_price=_price(quote.get("last_price")) or float(daily["Close"].iloc[-1]),
+        last_price=quoted_price or float(daily["Close"].iloc[-1]),
         previous_close=_price(quote.get("previous_close")),
         intraday=got["intraday"],
         market_daily=got["sp500"],
@@ -162,6 +192,7 @@ def fetch_snapshot(
         balance_sheet=got["balance_sheet"],
         cashflow=got["cashflow"],
         quarterly_income=got["quarterly_income"],
+        quarterly_balance=got["quarterly_balance"],
         earnings_history=got["earnings_history"],
         insider_purchases=got["insiders"],
         institutional_holders=got["institutions"],
@@ -170,7 +201,8 @@ def fetch_snapshot(
         price_targets=got["price_targets"] or {},
         rating_changes=got["rating_changes"],
         options=got["options"],
-        headlines=got["news"] or [],
+        headlines=[item.title for item in news],
+        news=news,
         earnings_dates=got["calendar"] or [],
         yields=got["yields"] or {},
         labor=got["labor"] or {},
@@ -209,13 +241,13 @@ def _yields() -> dict[str, pd.Series]:
     return yields
 
 
-def _news(ticker: str) -> list[str]:
+def _news(ticker: str) -> list[NewsItem]:
     """Yahoo Finance RSS first; yfinance's news endpoint (often empty) as a fallback."""
     try:
-        headlines = fetch_headlines(ticker)
+        items = fetch_news(ticker)
     except Exception:
-        headlines = []
-    return headlines or _headlines(yf.Ticker(ticker).news)
+        items = []
+    return items or _news_items(yf.Ticker(ticker).news)
 
 
 def _earnings_dates(calendar: Any) -> list[date]:
@@ -227,7 +259,28 @@ def _earnings_dates(calendar: Any) -> list[date]:
     return sorted(d.date() if isinstance(d, datetime) else d for d in raw if isinstance(d, date))
 
 
-def _headlines(news: list[dict] | None, limit: int = 8) -> list[str]:
-    # yfinance has shipped two news layouts: a flat `title`, and `content.title`.
-    titles = [item.get("title") or (item.get("content") or {}).get("title") for item in news or []]
-    return [t for t in titles if t][:limit]
+def _news_items(news: list[dict] | None, limit: int = 8) -> list[NewsItem]:
+    # yfinance has shipped two news layouts: flat (`title`, `link`, `publisher`,
+    # `providerPublishTime`) and nested under `content` (`canonicalUrl.url`, `pubDate`).
+    items = []
+    for raw in news or []:
+        content = raw.get("content") or {}
+        title = raw.get("title") or content.get("title")
+        if not title:
+            continue
+        link = (
+            raw.get("link")
+            or (content.get("canonicalUrl") or {}).get("url")
+            or (content.get("clickThroughUrl") or {}).get("url")
+        )
+        published = content.get("pubDate") or raw.get("providerPublishTime")
+        items.append(
+            NewsItem(
+                title=title,
+                link=link,
+                published=None if published is None else str(published),
+                summary=content.get("summary"),
+                source=raw.get("publisher") or (content.get("provider") or {}).get("displayName"),
+            )
+        )
+    return items[:limit]

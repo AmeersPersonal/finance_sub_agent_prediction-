@@ -1,8 +1,18 @@
-"""Revenue trend and a naive one-year projection from annual income statements."""
+"""Annual revenue trend, plus a naive extrapolation that is labelled as such.
+
+The extrapolation repeats the past CAGR for one more year. It ignores guidance,
+cycles and base effects, so the packet names it `naive_extrapolation_next_year`
+and says it isn't a forecast; analyst estimates live in `positioning.py`.
+"""
 
 from __future__ import annotations
 
 import pandas as pd
+
+NOT_A_FORECAST = (
+    "Not a forecast: the past CAGR repeated for one year. Ignores guidance, cycles "
+    "and base effects; don't treat it as expected revenue."
+)
 
 
 def revenue_forecast(income_stmt: pd.DataFrame | None) -> dict | None:
@@ -21,6 +31,7 @@ def revenue_forecast(income_stmt: pd.DataFrame | None) -> dict | None:
         "latest_revenue": float(revenue.iloc[-1]),
         "yoy_growth_pct": [round(float(g) * 100, 2) for g in revenue.pct_change().dropna()],
         "revenue_cagr_pct": round(float(growth_rate) * 100, 2),
-        "next_year_projection": round(float(revenue.iloc[-1] * (1 + growth_rate))),
+        "naive_extrapolation_next_year": round(float(revenue.iloc[-1] * (1 + growth_rate))),
         "method": f"{years}-year revenue CAGR extrapolated one year",
+        "caveat": NOT_A_FORECAST,
     }

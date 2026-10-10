@@ -8,9 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ai.feeds import NewsItem
 from ai.schemas import PersonaView
 from ai.sentiment import HeadlineScore, HeadlineSentiment
 from ai.tool import MarketSnapshot, OptionsChain
+from audit.media import ItemSummary, NewsDigest
 
 NY = "America/New_York"
 
@@ -81,6 +83,7 @@ def snapshot() -> MarketSnapshot:
         balance_sheet=_frame(BALANCE, ANNUAL[:2]),
         cashflow=_frame(CASHFLOW, ANNUAL[:2]),
         quarterly_income=_frame(QUARTERLY, QUARTERS),
+        quarterly_balance=_frame(QUARTERLY_BALANCE, QUARTERS[:2]),
         earnings_history=EARNINGS_HISTORY.copy(),
         insider_purchases=INSIDERS.copy(),
         institutional_holders=INSTITUTIONS.copy(),
@@ -93,6 +96,15 @@ def snapshot() -> MarketSnapshot:
             puts=pd.concat([_chain(spot, e, 50) for e in expiries], ignore_index=True),
         ),
         headlines=["Test Corp beats estimates"],
+        news=[
+            NewsItem(
+                title="Test Corp beats estimates",
+                link="https://finance.yahoo.com/news/test-corp-beats",
+                published="Thu, 08 Oct 2026 20:00:00 +0000",
+                summary="Revenue topped forecasts.",
+                source="Yahoo Finance",
+            )
+        ],
         earnings_dates=[date(2026, 10, 14)],  # inside a 5-day horizon from 2026-10-09
         yields={
             "3m": pd.Series(np.full(63, 4.0)),
@@ -140,7 +152,14 @@ QUARTERLY = {
     "Total Revenue": [110e9, 105e9, 100e9, 102e9, 100e9],
     "Gross Profit": [50e9, 47e9, 45e9, 46e9, 44e9],
     "Operating Income": [30e9, 28e9, 27e9, 27e9, 26e9],
+    "EBIT": [11e9, 10.5e9, 10e9, 10.2e9, 10e9],
     "Diluted EPS": [1.5, 1.4, 1.3, 1.35, 1.3],
+}
+QUARTERLY_BALANCE = {
+    "Total Assets": [210e9, 205e9],
+    "Working Capital": [32e9, 31e9],
+    "Retained Earnings": [65e9, 62e9],
+    "Total Liabilities Net Minority Interest": [125e9, 122e9],
 }
 
 
@@ -207,25 +226,39 @@ LABOR = {
 
 class FakeLLM:
     """Answers `up` for every persona except day traders, who answer `down`,
-    and scores every headline +0.5."""
+    scores every headline +0.5, and summarises news item 1."""
 
     model = "fake-model"
 
     def __init__(self, fail_for: str | None = None) -> None:
         self.calls: list[tuple[str, str]] = []  # persona calls only
+        self.call_options: list[tuple[str | None, float | None]] = []  # (model, temperature)
+        self.down_above: float | None = None  # temperatures above this answer down
         self.sentiment_calls = 0
+        self.digest_prompts: list[str] = []
         self.fail_for = fail_for
 
-    async def generate_json(self, system, prompt, schema):
+    async def generate_json(self, system, prompt, schema, *, temperature=None, model=None):
         if schema is HeadlineSentiment:
             self.sentiment_calls += 1
             return HeadlineSentiment(
                 scores=[HeadlineScore(headline="h", score=0.5)], overall=0.4, summary="Beat."
             )
+        if schema is NewsDigest:
+            self.digest_prompts.append(prompt)
+            return NewsDigest(
+                # item 99 doesn't exist and must be dropped, not turned into a link
+                items=[ItemSummary(item=1, tldr="Beat on revenue.", relevance="high"),
+                       ItemSummary(item=99, tldr="Invented.", relevance="low")],
+                summary="Results beat.",
+            )
         self.calls.append((system, prompt))
+        self.call_options.append((model, temperature))
         if self.fail_for and self.fail_for in system:
             raise RuntimeError("simulated API failure")
         direction = "down" if "day trader" in system else "up"
+        if self.down_above is not None and (temperature or 0) > self.down_above:
+            direction = "down"
         return PersonaView(direction=direction, conviction=0.6, rationale="test", key_factors=[])
 
 

@@ -1,5 +1,11 @@
 """Who owns the stock and what the Street expects: insiders (Form 4), institutions
-(13F), short sellers and analysts. Inputs are yfinance tables; see tool.py."""
+(13F), short sellers and analysts. Inputs are yfinance tables; see tool.py.
+
+All of it is point-in-time: yfinance only serves today's snapshot (the last 6
+months of insider activity, the latest 13F filings, this month's short
+interest, current estimates), not the values as they stood on past dates. None
+of it can be backtested, and none of it may be added to the regression features.
+"""
 
 from __future__ import annotations
 

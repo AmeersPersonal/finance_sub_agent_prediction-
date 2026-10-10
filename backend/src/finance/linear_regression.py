@@ -17,6 +17,7 @@ out of the persona prompts so the two predictions stay independent.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +26,33 @@ import pandas as pd
 from finance.backtest import strategy_returns, summarize
 from finance.indicators import TRADING_DAYS, flat_band_series, rsi_series
 
+
+def _log_volatility(close: pd.Series, window: int) -> pd.Series:
+    return np.log(close).diff().rolling(window).std()
+
+
+# Every feature the model knows, each computed from data up to that day's close.
+FEATURE_FUNCTIONS: dict[str, Callable[[pd.DataFrame], pd.Series]] = {
+    "return_1d": lambda d: d["Close"].pct_change(1),
+    "return_5d": lambda d: d["Close"].pct_change(5),
+    "return_21d": lambda d: d["Close"].pct_change(21),
+    "rsi_14": lambda d: rsi_series(d["Close"]) / 100,
+    "volatility_21d": lambda d: _log_volatility(d["Close"], 21),
+    "dist_from_sma50": lambda d: d["Close"] / d["Close"].rolling(50).mean() - 1,
+    "volume_vs_20d": lambda d: d["Volume"] / d["Volume"].rolling(20).mean(),
+    # Candidates tried in walk-forward on 25 tickers and not kept (see finance/spec.md).
+    "return_63d": lambda d: d["Close"].pct_change(63),
+    "return_252d": lambda d: d["Close"].pct_change(252),
+    "dist_from_sma200": lambda d: d["Close"] / d["Close"].rolling(200).mean() - 1,
+    "volatility_ratio_21_63": lambda d: _log_volatility(d["Close"], 21)
+    / _log_volatility(d["Close"], 63),
+    "range_5d": lambda d: ((d["High"] - d["Low"]) / d["Close"]).rolling(5).mean(),
+    "gap_1d": lambda d: d["Open"] / d["Close"].shift(1) - 1,
+    "rsi_2": lambda d: rsi_series(d["Close"], 2) / 100,
+    "volume_5d_vs_60d": lambda d: d["Volume"].rolling(5).mean() / d["Volume"].rolling(60).mean(),
+}
+
+# The features the baseline uses. Change only on walk-forward evidence across many tickers.
 FEATURES = (
     "return_1d",
     "return_5d",
@@ -34,24 +62,16 @@ FEATURES = (
     "dist_from_sma50",
     "volume_vs_20d",
 )
+CANDIDATE_FEATURES = tuple(f for f in FEATURE_FUNCTIONS if f not in FEATURES)
 
 
-def build_features(daily: pd.DataFrame) -> pd.DataFrame:
+def build_features(daily: pd.DataFrame, features: Sequence[str] = FEATURES) -> pd.DataFrame:
     """One row per day, using only data up to and including that day's close."""
-    close, volume = daily["Close"], daily["Volume"]
-    features = pd.DataFrame(
-        {
-            "return_1d": close.pct_change(1),
-            "return_5d": close.pct_change(5),
-            "return_21d": close.pct_change(21),
-            "rsi_14": rsi_series(close) / 100,
-            "volatility_21d": np.log(close).diff().rolling(21).std(),
-            "dist_from_sma50": close / close.rolling(50).mean() - 1,
-            "volume_vs_20d": volume / volume.rolling(20).mean(),
-        },
-        columns=FEATURES,
-    )
-    return features.replace([np.inf, -np.inf], np.nan)
+    unknown = [f for f in features if f not in FEATURE_FUNCTIONS]
+    if unknown:
+        raise ValueError(f"Unknown features {unknown}; choose from {list(FEATURE_FUNCTIONS)}")
+    frame = pd.DataFrame({f: FEATURE_FUNCTIONS[f](daily) for f in features}, columns=list(features))
+    return frame.replace([np.inf, -np.inf], np.nan)
 
 
 def forward_return(close: pd.Series, horizon_days: int) -> pd.Series:
@@ -115,10 +135,15 @@ class RegressionResult:
 
 
 def run_regression(
-    daily: pd.DataFrame, horizon_days: int, test_fraction: float = 0.2, cost_bps: float = 5.0
+    daily: pd.DataFrame,
+    horizon_days: int,
+    test_fraction: float = 0.2,
+    cost_bps: float = 5.0,
+    features: Sequence[str] = FEATURES,
 ) -> RegressionResult:
     close = daily["Close"]
-    features = build_features(daily)
+    feature_names = tuple(features)
+    features = build_features(daily, feature_names)
     target = forward_return(close, horizon_days)
     band = flat_band_series(close, horizon_days)
 
@@ -146,7 +171,7 @@ def run_regression(
         horizon_days=horizon_days,
         predicted_return_pct=round(float(final.predict(latest.to_numpy())[0]) * 100, 3),
         features_as_of=str(latest.index[0].date()),
-        coefficients={f: round(float(c) * 100, 4) for f, c in zip(FEATURES, final.coef[1:])},
+        coefficients={f: round(float(c) * 100, 4) for f, c in zip(feature_names, final.coef[1:])},
         oos_r2=round(float(oos_r2), 4),
         oos_accuracy=round(float((call == outcome).mean()), 4),
         always_up_accuracy=round(float((outcome == "up").mean()), 4),

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from ai.llm import JsonLLM
+from ai.modes import DEFAULT_MODE, ReasoningMode
 from ai.personas import STRATEGY_PROFILES, STRATEGY_TITLES, Persona, Strategy
 from ai.rag_retrieval import Snippet, load_age_profile, retrieve
 from ai.schemas import PersonaResult, PersonaView
@@ -33,12 +34,29 @@ from finance.positioning import (
 )
 from finance.quarter_review_analysis import quarterly_review
 from finance.revenue_forecast import revenue_forecast
-from finance.risk_management import altman_z
+from finance.risk_management import altman_z, altman_z_ttm
 
 log = logging.getLogger(__name__)
 
-# Bump when prompts or packets change, so logged predictions stay comparable.
-PROMPT_VERSION = "3"
+# Bump when prompts or packets change, so logged predictions stay comparable, and
+# say what changed in PROMPT_CHANGELOG (a test fails if the current version is missing).
+PROMPT_VERSION = "5"
+PROMPT_CHANGELOG = {
+    "1": "Unrecorded: predates the first commit.",
+    "2": "Unrecorded: predates the first commit.",
+    "3": (
+        "First committed version (c344818). Per-strategy packets: fundamentals, Altman Z, "
+        "Beneish M, 10-Q review, insiders/institutions/analysts and yields for long_term; "
+        "intraday technicals, rating changes and headlines for day_trader; index, sector, "
+        "VIX, options, short interest and macro for index_options. Volatility-scaled flat band."
+    ),
+    "4": "Results record their reasoning mode, model and temperature. Prompts and packets unchanged.",
+    "5": (
+        "long_term packet: revenue.next_year_projection renamed naive_extrapolation_next_year "
+        "with a not-a-forecast caveat; altman_z uses the latest quarter and trailing four "
+        "quarters when available and says which in `basis`."
+    ),
+}
 
 DOC_QUERIES = {
     Strategy.LONG_TERM: "annual report revenue earnings guidance margin valuation debt",
@@ -156,6 +174,13 @@ def _long_term(snapshot: MarketSnapshot, sentiment: dict | None) -> dict[str, An
             financial_health, snapshot.income_stmt, snapshot.balance_sheet, snapshot.cashflow, info
         ),
         "altman_z": _metric_dict(
+            altman_z_ttm,
+            snapshot.quarterly_balance,
+            snapshot.quarterly_income,
+            info.get("marketCap"),
+            sector,
+        )
+        or _metric_dict(
             altman_z, snapshot.balance_sheet, snapshot.income_stmt, info.get("marketCap"), sector
         ),
         "beneish_m": _metric_dict(
@@ -347,17 +372,27 @@ def build_prompt(
 
 
 async def run_persona(
-    persona: Persona, context: dict[str, Any], docs: list[Snippet], llm: JsonLLM
+    persona: Persona,
+    context: dict[str, Any],
+    docs: list[Snippet],
+    llm: JsonLLM,
+    mode: ReasoningMode = DEFAULT_MODE,
 ) -> PersonaResult:
+    """One persona under one reasoning mode (model + temperature)."""
     system, prompt = build_prompt(persona, context, docs)
     base = {
         "persona_id": persona.id,
         "strategy": persona.strategy.value,
         "age_band": persona.age_band.label,
+        "mode": mode.name,
+        "model": mode.model or llm.model,
+        "temperature": mode.temperature,
     }
     try:
-        view = await llm.generate_json(system, prompt, PersonaView)
+        view = await llm.generate_json(
+            system, prompt, PersonaView, temperature=mode.temperature, model=mode.model
+        )
     except Exception as exc:  # one failed persona shouldn't sink the whole prediction
-        log.warning("persona %s failed: %s", persona.id, exc)
+        log.warning("persona %s (%s) failed: %s", persona.id, mode.name, exc)
         return PersonaResult(**base, error=f"{type(exc).__name__}: {exc}")
     return PersonaResult(**base, view=view)

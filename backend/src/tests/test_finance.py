@@ -86,7 +86,8 @@ def test_revenue_forecast(snapshot):
     result = revenue_forecast(snapshot.income_stmt)
     assert result["latest_fiscal_year_end"] == "2025-09-30"
     assert result["yoy_growth_pct"] == [10.0, 9.09, 8.33]
-    assert result["next_year_projection"] > 130e9
+    assert result["naive_extrapolation_next_year"] > 130e9
+    assert result["caveat"].startswith("Not a forecast")
 
 
 def test_revenue_forecast_missing_data():

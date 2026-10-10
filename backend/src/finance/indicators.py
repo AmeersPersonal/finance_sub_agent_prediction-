@@ -147,7 +147,8 @@ def cagr(close: pd.Series) -> float:
 
 
 def max_drawdown(close: pd.Series) -> float:
-    """Worst peak-to-trough fall, as a negative fraction."""
+    """Worst peak-to-trough fall of a price or equity series, as a negative fraction.
+    The one implementation; `backtest.max_drawdown` turns returns into equity and calls this."""
     return float((close / close.cummax() - 1).min())
 
 

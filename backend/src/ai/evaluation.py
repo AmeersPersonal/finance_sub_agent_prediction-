@@ -8,14 +8,23 @@ baseline on the same three-way up / flat / down outcome.
 
 Score only live-logged predictions: replaying history through the LLM leaks
 outcomes it may have seen in training.
+
+Stock splits: Yahoo's "unadjusted" closes are still split-adjusted after the
+fact (NVDA's 2024-06-07 close reads 120.89, not the ~1209 it traded at before
+its 10:1 split). The logged live price is in pre-split units, so `resolve`
+divides it by every split that took effect after the prediction's data date.
+
+The scorer also suggests strategy weights from each strategy's scored votes;
+`python main.py AAPL --weights auto` feeds them back into `predict()`.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from bisect import bisect_left
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -31,8 +40,12 @@ DEFAULT_LOG = Path(__file__).resolve().parents[2] / "data" / "predictions.jsonl"
 MARKET_TZ = ZoneInfo("America/New_York")
 CLOSE_IS_FINAL = time(16, 30)  # daily bars are settled a little after the 16:00 close
 CONFIDENCE_BUCKETS = ((0.0, 0.25), (0.25, 0.5), (0.5, 1.01))
+# Pseudo-votes at the pooled hit rate added to each strategy before weighting it,
+# so a strategy needs a few dozen scored votes before its weight moves far from 1.
+PRIOR_VOTES = 30
 
 log = logging.getLogger(__name__)
+_log_lock = threading.Lock()  # the API can log from several requests at once
 
 
 def baselines(
@@ -50,7 +63,7 @@ def baselines(
 
 def log_prediction(prediction: Prediction, path: Path = DEFAULT_LOG) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    with _log_lock, path.open("a", encoding="utf-8") as f:
         f.write(prediction.model_dump_json() + "\n")
 
 
@@ -77,10 +90,26 @@ class Outcome:
     actual: Direction
 
 
-def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome | None:
-    """`closes` is indexed by date, ascending. None while the horizon is still open."""
+def split_factor(splits: pd.Series | None, after: date) -> float:
+    """Combined ratio of the splits that took effect after `after` (4.0 for a 4:1 split,
+    0.1 for a 1:10 reverse split). `splits` is indexed by date; zero means no split."""
+    if splits is None:
+        return 1.0
+    factor = 1.0
+    for day, ratio in splits.items():
+        if day > after and ratio > 0:
+            factor *= float(ratio)
+    return factor
+
+
+def resolve(
+    prediction: Prediction, closes: pd.Series, now: datetime, splits: pd.Series | None = None
+) -> Outcome | None:
+    """`closes` and `splits` are indexed by date, ascending. None while the horizon is
+    still open."""
+    as_of = date.fromisoformat(prediction.data_as_of)
     dates = list(closes.index)
-    target = bisect_left(dates, date.fromisoformat(prediction.data_as_of)) + prediction.horizon_days
+    target = bisect_left(dates, as_of) + prediction.horizon_days
     if target >= len(dates):
         return None
     resolved_on = dates[target]
@@ -89,7 +118,10 @@ def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome
         resolved_on == local_now.date() and local_now.time() < CLOSE_IS_FINAL
     ):
         return None
-    ret = float(closes.iloc[target]) / prediction.last_price - 1
+    if pd.isna(closes.iloc[target]):  # Yahoo hasn't finalised that bar yet: still pending
+        return None
+    base_price = prediction.last_price / split_factor(splits, as_of)  # into today's share units
+    ret = float(closes.iloc[target]) / base_price - 1
     return Outcome(
         prediction=prediction,
         resolved_on=resolved_on,
@@ -115,15 +147,44 @@ class Report:
     by_strategy: dict[str, float | None]  # individual persona votes
     by_age_band: dict[str, float | None]
     outcomes: list[Outcome] = field(default_factory=list)
+    by_mode: dict[str, float | None] = field(default_factory=dict)  # persona votes per reasoning mode
+    by_model: dict[str, float | None] = field(default_factory=dict)
+    strategy_weights: dict[str, float] = field(default_factory=dict)  # for --weights auto
+
+
+def derive_strategy_weights(
+    votes: Mapping[str, Sequence[bool]], prior_votes: int = PRIOR_VOTES
+) -> dict[str, float]:
+    """`predict(strategy_weights=...)` from each strategy's scored persona votes.
+
+    Each strategy's hit rate is shrunk toward the pooled hit rate by `prior_votes`
+    pseudo-votes and divided by the pooled rate: about 1.0 for an average strategy
+    or one with few votes, above 1 for one that's right more often. Never zero.
+    """
+    total = sum(len(v) for v in votes.values())
+    hits = sum(sum(v) for v in votes.values())
+    if not total or not hits:
+        return {}
+    pooled = hits / total
+    return {
+        s: round((sum(v) + prior_votes * pooled) / (len(v) + prior_votes) / pooled, 3)
+        for s, v in sorted(votes.items())
+    }
 
 
 def score(
-    predictions: Sequence[Prediction], closes_by_ticker: dict[str, pd.Series], now: datetime
+    predictions: Sequence[Prediction],
+    closes_by_ticker: dict[str, pd.Series],
+    now: datetime,
+    splits_by_ticker: Mapping[str, pd.Series] | None = None,
 ) -> Report:
+    splits_by_ticker = splits_by_ticker or {}
     outcomes = []
     for p in predictions:
         closes = closes_by_ticker.get(p.ticker)
-        outcome = resolve(p, closes, now) if closes is not None else None
+        outcome = (
+            resolve(p, closes, now, splits_by_ticker.get(p.ticker)) if closes is not None else None
+        )
         if outcome is not None:
             outcomes.append(outcome)
 
@@ -148,11 +209,15 @@ def score(
 
     votes_by_strategy: dict[str, list[bool]] = defaultdict(list)
     votes_by_age: dict[str, list[bool]] = defaultdict(list)
+    votes_by_mode: dict[str, list[bool]] = defaultdict(list)
+    votes_by_model: dict[str, list[bool]] = defaultdict(list)
     for o in outcomes:
         for r in o.prediction.personas:
             if r.view is not None:
                 votes_by_strategy[r.strategy].append(r.view.direction == o.actual)
                 votes_by_age[r.age_band].append(r.view.direction == o.actual)
+                votes_by_mode[r.mode].append(r.view.direction == o.actual)
+                votes_by_model[r.model or o.prediction.model].append(r.view.direction == o.actual)
 
     return Report(
         scored=len(outcomes),
@@ -165,23 +230,32 @@ def score(
         by_strategy={s: _rate(v) for s, v in sorted(votes_by_strategy.items())},
         by_age_band={a: _rate(v) for a, v in sorted(votes_by_age.items())},
         outcomes=outcomes,
+        by_mode={m: _rate(v) for m, v in sorted(votes_by_mode.items())},
+        by_model={m: _rate(v) for m, v in sorted(votes_by_model.items())},
+        strategy_weights=derive_strategy_weights(votes_by_strategy),
     )
 
 
-def fetch_closes(tickers: Iterable[str], since: date) -> dict[str, pd.Series]:
-    """Daily closes indexed by plain dates (not adjusted, to match logged live prices)."""
+def fetch_history(
+    tickers: Iterable[str], since: date
+) -> tuple[dict[str, pd.Series], dict[str, pd.Series]]:
+    """Daily closes (not dividend-adjusted, to match logged live prices) and split
+    ratios, both indexed by plain dates."""
     import yfinance as yf
 
-    closes = {}
+    closes, splits = {}, {}
     for ticker in sorted(set(tickers)):
-        history = yf.Ticker(ticker).history(start=since.isoformat(), auto_adjust=False)
+        history = yf.Ticker(ticker).history(
+            start=since.isoformat(), auto_adjust=False, actions=True
+        )
         if history.empty:
             log.warning("no closes for %s; its predictions stay pending", ticker)
             continue
-        closes[ticker] = pd.Series(
-            history["Close"].to_numpy(), index=[ts.date() for ts in history.index]
-        )
-    return closes
+        days = [ts.date() for ts in history.index]
+        closes[ticker] = pd.Series(history["Close"].to_numpy(), index=days)
+        if "Stock Splits" in history.columns:
+            splits[ticker] = pd.Series(history["Stock Splits"].to_numpy(), index=days)
+    return closes, splits
 
 
 def score_log(path: Path = DEFAULT_LOG, now: datetime | None = None) -> Report:
@@ -191,6 +265,7 @@ def score_log(path: Path = DEFAULT_LOG, now: datetime | None = None) -> Report:
         report = score([], {}, now)
     else:
         since = min(date.fromisoformat(p.data_as_of) for p in predictions)
-        report = score(predictions, fetch_closes((p.ticker for p in predictions), since), now)
+        closes, splits = fetch_history((p.ticker for p in predictions), since)
+        report = score(predictions, closes, now, splits)
     report.unreadable = unreadable
     return report

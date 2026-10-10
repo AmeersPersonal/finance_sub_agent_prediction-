@@ -32,6 +32,9 @@ class PersonaResult(BaseModel):
     persona_id: str
     strategy: str
     age_band: str
+    mode: str = "default"  # the reasoning mode (model + temperature) this view came from
+    model: str | None = None
+    temperature: float | None = None
     view: PersonaView | None = None
     error: str | None = None
 
@@ -47,8 +50,19 @@ class Prediction(BaseModel):
     net_score: float = Field(description="-1 (all max-conviction down) to +1 (all up)")
     agreement: float = Field(description="Share of personas whose direction matches the call")
     by_strategy: dict[str, float]
+    modes: list[str] = Field(default_factory=lambda: ["default"])
+    by_mode: dict[str, float] = Field(
+        default_factory=dict, description="Net score if only that reasoning mode had voted"
+    )
+    stability: float | None = Field(
+        default=None,
+        description="Share of persona-mode samples matching the call; 0 when unclear",
+    )
     flat_band_pct: float = Field(description="Moves within +/- this percent count as flat")
     last_price: float
+    quote_source: str = Field(
+        default="yfinance", description="Where last_price came from: yfinance REST or a live feed"
+    )
     data_as_of: str
     next_earnings_date: str | None
     earnings_within_horizon: bool | None
@@ -63,3 +77,7 @@ class Prediction(BaseModel):
     prompt_version: str
     personas: list[PersonaResult]
     data_warnings: list[str]
+    audit: dict[str, Any] | None = Field(
+        default=None,
+        description="Company overview, data checks, risk checklist and news digest (audit/)",
+    )

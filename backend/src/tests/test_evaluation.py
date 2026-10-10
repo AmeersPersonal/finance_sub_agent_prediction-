@@ -3,7 +3,16 @@ from datetime import date, datetime
 import pandas as pd
 import pytest
 
-from ai.evaluation import MARKET_TZ, baselines, load_log, log_prediction, resolve, score
+from ai.evaluation import (
+    MARKET_TZ,
+    baselines,
+    derive_strategy_weights,
+    load_log,
+    log_prediction,
+    resolve,
+    score,
+    split_factor,
+)
 from ai.schemas import PersonaResult, PersonaView, Prediction
 
 
@@ -45,6 +54,56 @@ def test_resolve_uses_the_close_n_trading_days_later():
     assert resolve(make_prediction(), closes(100.5), at("2026-10-20", 12)).actual == "flat"
 
 
+def test_resolve_converts_the_logged_price_across_a_split():
+    # Logged at 400 before a 4:1 split; Yahoo's history shows every close in post-split units.
+    split_on = date(2026, 10, 13)
+    splits = pd.Series(0.0, index=closes(0).index)
+    splits[split_on] = 4.0
+    prediction = make_prediction(last_price=400.0)
+    outcome = resolve(prediction, closes(103.0), at("2026-10-20", 12), splits)
+    assert outcome.return_pct == 3.0 and outcome.actual == "up"
+    # Without the split data the same prediction would look like a 74% crash.
+    assert resolve(prediction, closes(103.0), at("2026-10-20", 12)).actual == "down"
+
+
+def test_split_factor_only_counts_splits_after_the_data_date():
+    splits = pd.Series({date(2026, 10, 9): 2.0, date(2026, 10, 13): 4.0, date(2026, 10, 14): 0.0})
+    assert split_factor(splits, date(2026, 10, 9)) == 4.0  # the 10-09 split was already priced in
+    assert split_factor(splits, date(2026, 10, 8)) == 8.0
+    assert split_factor(pd.Series({date(2026, 10, 13): 0.1}), date(2026, 10, 9)) == 0.1  # reverse
+    assert split_factor(None, date(2026, 10, 9)) == 1.0
+
+
+def test_score_passes_splits_through():
+    splits = {"TEST": pd.Series({date(2026, 10, 13): 2.0})}
+    report = score([make_prediction(last_price=200.0)], {"TEST": closes(105.0)},
+                   at("2026-10-20", 12), splits)
+    assert report.outcomes[0].return_pct == 5.0
+
+
+def test_derived_weights_favour_the_more_accurate_strategy():
+    votes = {"good": [True] * 80 + [False] * 20, "bad": [True] * 20 + [False] * 80}
+    weights = derive_strategy_weights(votes)
+    assert weights["good"] > 1 > weights["bad"] > 0
+
+
+def test_derived_weights_stay_near_one_with_few_votes():
+    weights = derive_strategy_weights({"a": [True, True], "b": [False, False]})
+    assert weights["a"] == pytest.approx(1, abs=0.1) and weights["b"] == pytest.approx(1, abs=0.1)
+    assert derive_strategy_weights({}) == {} and derive_strategy_weights({"a": [False]}) == {}
+
+
+def test_score_reports_strategy_weights():
+    right = make_prediction(votes=[("long_term", "18-24", "up"), ("day_trader", "18-24", "down")])
+    report = score([right], {"TEST": closes(105.0)}, at("2026-10-20", 12))
+    assert report.strategy_weights["long_term"] > report.strategy_weights["day_trader"]
+
+
+def test_an_unfinalised_target_close_stays_pending():
+    # A NaN close would otherwise classify as "flat" and count as a scored outcome.
+    assert resolve(make_prediction(), closes(float("nan")), at("2026-10-20", 12)) is None
+
+
 def test_resolve_waits_for_the_closing_bar_to_settle():
     assert resolve(make_prediction(), closes(103.0), at("2026-10-16", 10)) is None
     assert resolve(make_prediction(), closes(103.0), at("2026-10-16", 17)) is not None
@@ -63,6 +122,41 @@ def test_score_compares_personas_against_baselines():
     assert report.coverage == 0.5 and report.accuracy_when_called == 1.0
     assert report.by_confidence["0.50-1.00"] == (1, 1.0)
     assert report.by_strategy == {"day_trader": 0.0, "long_term": 1.0}
+
+
+def test_score_breaks_votes_down_by_mode_and_model():
+    personas = [
+        PersonaResult(
+            persona_id="long_term:18-24", strategy="long_term", age_band="18-24",
+            mode=mode, model=model,
+            view=PersonaView(direction=d, conviction=0.5, rationale="", key_factors=[]),
+        )
+        for mode, model, d in (("cool", "small", "up"), ("hot", "big", "down"))
+    ]
+    legacy = make_prediction(votes=[("long_term", "25-39", "up")], ticker="OLD")  # no mode fields
+    report = score(
+        [make_prediction(personas=personas), legacy],
+        {"TEST": closes(105.0), "OLD": closes(105.0)},
+        at("2026-10-20", 12),
+    )
+    assert report.by_mode == {"cool": 1.0, "default": 1.0, "hot": 0.0}
+    assert report.by_model == {"big": 0.0, "fake": 1.0, "small": 1.0}
+
+
+def test_old_log_lines_without_modes_still_load(tmp_path):
+    path = tmp_path / "log.jsonl"
+    record = make_prediction(votes=[("long_term", "18-24", "up")]).model_dump(mode="json")
+    for key in ("modes", "by_mode", "stability"):
+        record.pop(key)
+    for persona in record["personas"]:
+        for key in ("mode", "model", "temperature"):
+            persona.pop(key)
+    import json
+
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    loaded, unreadable = load_log(path)
+    assert unreadable == 0 and loaded[0].modes == ["default"]
+    assert loaded[0].personas[0].mode == "default"
 
 
 def test_log_round_trip_skips_unreadable_lines(tmp_path):

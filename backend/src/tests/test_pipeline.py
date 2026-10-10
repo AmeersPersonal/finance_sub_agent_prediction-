@@ -3,8 +3,9 @@ import json
 
 import pytest
 
-from ai.agents import build_context, horizon_info
+from ai.agents import PROMPT_CHANGELOG, PROMPT_VERSION, build_context, horizon_info
 from ai.main import predict
+from ai.modes import resolve_modes
 from ai.personas import Strategy
 
 
@@ -36,6 +37,8 @@ def test_new_analysis_layers_reach_the_right_strategies(snapshot):
     index = build_context(Strategy.INDEX_OPTIONS, snapshot, horizon, sentiment)
 
     assert long_term["altman_z"]["zone"] == "safe"
+    assert long_term["altman_z"]["basis"] == "ttm"  # quarterly data preferred over annual
+    assert long_term["revenue"]["caveat"].startswith("Not a forecast")
     assert long_term["beneish_m"]["above_threshold_possible_manipulation"] is False
     assert long_term["financial_health"]["roic_pct"] == pytest.approx(26.6667, abs=1e-3)
     assert long_term["quarterly_review"]["eps_beats"] == 3
@@ -58,6 +61,17 @@ def test_new_analysis_layers_reach_the_right_strategies(snapshot):
     assert index["nasdaq_100"]["beta_vs_qqq"] is not None
     assert index["short_interest"]["change_vs_prior_month_pct"] == 10.0
     assert index["options"]["iv_to_realized_vol"] > 0
+
+
+def test_altman_z_falls_back_to_annual_statements(snapshot):
+    snapshot.quarterly_balance = None
+    horizon = horizon_info(snapshot, 5, 0.01)
+    assert build_context(Strategy.LONG_TERM, snapshot, horizon)["altman_z"]["basis"] == "annual"
+
+
+def test_every_prompt_version_is_in_the_changelog():
+    assert PROMPT_VERSION in PROMPT_CHANGELOG
+    assert list(PROMPT_CHANGELOG) == [str(v) for v in range(1, int(PROMPT_VERSION) + 1)]
 
 
 def test_spread_is_hidden_outside_the_regular_session(snapshot):
@@ -106,7 +120,8 @@ def test_predict_end_to_end(snapshot, fake_llm):
     assert "sharpe" in prediction.linear_regression["strategy"]
     assert fake_llm.sentiment_calls == 1 and prediction.headline_sentiment["overall"] == 0.4
     assert prediction.risk["max_position_pct_of_account_risking_1pct"] > 0
-    assert prediction.prompt_version == "3"
+    assert prediction.prompt_version == PROMPT_VERSION
+    assert prediction.modes == ["default"] and prediction.stability is not None
     for _, prompt in fake_llm.calls:
         assert _data_block(prompt)["ticker"] == "TEST"  # the data block is valid JSON
         assert f"+/-{prediction.flat_band_pct:g}%" in prompt
@@ -117,3 +132,39 @@ def test_one_failed_persona_does_not_sink_the_prediction(snapshot, failing_llm):
     failed = [p for p in prediction.personas if p.error]
     assert len(failed) == 3 and all(p.age_band == "55-65" for p in failed)
     assert prediction.direction == "up"
+
+
+def test_each_mode_runs_every_persona_with_its_options(snapshot, fake_llm):
+    modes = resolve_modes("temps")
+    prediction = asyncio.run(predict("TEST", llm=fake_llm, snapshot=snapshot, modes=modes))
+
+    assert len(prediction.personas) == 13 * 3 and len(fake_llm.calls) == 13 * 3
+    assert prediction.modes == ["t0.2", "t0.7", "t1.0"]
+    assert {r.temperature for r in prediction.personas} == {0.2, 0.7, 1.0}
+    assert {t for _, t in fake_llm.call_options} == {0.2, 0.7, 1.0}
+    assert set(prediction.by_mode) == {"t0.2", "t0.7", "t1.0"}
+    # Same answers under every mode: extra samples must not change the call.
+    assert prediction.direction == "up" and prediction.net_score == pytest.approx(0.2)
+
+
+def test_modes_that_disagree_lower_stability(snapshot, fake_llm):
+    fake_llm.down_above = 0.5  # t0.7 and t1.0 flip every persona to "down"
+    prediction = asyncio.run(
+        predict("TEST", llm=fake_llm, snapshot=snapshot, modes=resolve_modes("temps"))
+    )
+    assert prediction.by_mode["t0.2"] == pytest.approx(0.2)
+    assert prediction.by_mode["t1.0"] == pytest.approx(-0.6)
+    assert prediction.stability < 1.0
+
+
+def test_unknown_mode_is_rejected():
+    with pytest.raises(ValueError, match="Unknown mode"):
+        resolve_modes("nonsense")
+
+
+def test_model_override_is_recorded(snapshot, fake_llm, monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_STRONG", "big-model")
+    prediction = asyncio.run(
+        predict("TEST", llm=fake_llm, snapshot=snapshot, modes=resolve_modes("models"))
+    )
+    assert {r.model for r in prediction.personas} == {"fake-model", "big-model"}

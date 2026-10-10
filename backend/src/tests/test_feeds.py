@@ -5,11 +5,14 @@ import pandas as pd
 import pytest
 
 import ai.feeds as feeds
-from ai.feeds import BLS_SERIES, fetch_bls, parse_bls, parse_rss_titles
+from ai.feeds import BLS_SERIES, fetch_bls, parse_bls, parse_rss_items, parse_rss_titles
 
 RSS = b"""<?xml version="1.0"?>
 <rss version="2.0"><channel><title>Yahoo! Finance: AAPL News</title>
-<item><title>Apple &amp; partners raise guidance</title></item>
+<item><title>Apple &amp; partners raise guidance</title>
+<link>https://finance.yahoo.com/news/apple-guidance</link>
+<pubDate>Thu, 08 Oct 2026 20:00:00 +0000</pubDate>
+<description>&lt;p&gt;Apple lifted its outlook.&lt;/p&gt;</description></item>
 <item><title>   </title></item>
 <item><title>iPhone demand softens</title></item>
 </channel></rss>"""
@@ -36,6 +39,25 @@ def bls_payload(status="REQUEST_SUCCEEDED"):
 
 def test_parse_rss_titles_skips_blank_items():
     assert parse_rss_titles(RSS) == ["Apple & partners raise guidance", "iPhone demand softens"]
+
+
+def test_parse_rss_items_keep_links_and_strip_markup():
+    first, second = parse_rss_items(RSS)
+    assert first.link == "https://finance.yahoo.com/news/apple-guidance"
+    assert first.published == "Thu, 08 Oct 2026 20:00:00 +0000"
+    assert first.summary == "Apple lifted its outlook."
+    assert second.link is None and second.summary is None
+
+
+def test_old_bls_cache_files_are_pruned(tmp_path, monkeypatch):
+    monkeypatch.setattr(feeds, "_get", lambda url, body=None: json.dumps(bls_payload()).encode())
+    (tmp_path / "bls_2026-09-01.json").write_text("{}")  # 38 days old
+    (tmp_path / "bls_2026-10-05.json").write_text("{}")  # 4 days old, kept
+    (tmp_path / "notes.json").write_text("{}")  # not a cache file, never touched
+    fetch_bls(date(2026, 10, 9), cache_dir=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "bls_2026-10-05.json", "bls_2026-10-09.json", "notes.json"
+    ]
 
 
 def test_parse_bls_skips_annual_averages_and_unpublished_months():

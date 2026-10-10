@@ -1,8 +1,13 @@
 import pytest
 
-from finance.fundamentals import beneish_m_score, financial_health
+from finance.fundamentals import beneish_m_score, financial_health, ttm
 from finance.quarter_review_analysis import quarterly_review
-from finance.risk_management import altman_z, atr_stop_distance, max_position_fraction
+from finance.risk_management import (
+    altman_z,
+    altman_z_ttm,
+    atr_stop_distance,
+    max_position_fraction,
+)
 
 
 def test_financial_health(snapshot):
@@ -37,6 +42,24 @@ def test_altman_z(snapshot):
 def test_altman_z_not_for_banks_or_missing_data(snapshot):
     assert altman_z(snapshot.balance_sheet, snapshot.income_stmt, 500e9, "Financial Services") is None
     assert altman_z(None, snapshot.income_stmt, 500e9) is None
+
+
+def test_altman_z_ttm_uses_latest_quarter_and_four_quarter_flows(snapshot):
+    result = altman_z_ttm(snapshot.quarterly_balance, snapshot.quarterly_income, 500e9)
+    ebit, revenue, assets = 41.7e9, 417e9, 210e9  # sums of the latest four quarters
+    expected = (1.2 * 32 / 210 + 1.4 * 65 / 210 + 3.3 * ebit / assets + 0.6 * 500 / 125
+                + 0.999 * revenue / assets)
+    assert result["z_score"] == pytest.approx(expected)
+    assert (result["basis"], result["balance_sheet_as_of"]) == ("ttm", "2026-06-30")
+    assert altman_z(snapshot.balance_sheet, snapshot.income_stmt, 500e9)["basis"] == "annual"
+
+
+def test_altman_z_ttm_needs_four_quarters(snapshot):
+    three = snapshot.quarterly_income.iloc[:, :3]
+    assert ttm(three, "EBIT") is None
+    assert altman_z_ttm(snapshot.quarterly_balance, three, 500e9) is None
+    assert altman_z_ttm(snapshot.quarterly_balance, snapshot.quarterly_income, 500e9,
+                        "Financial Services") is None
 
 
 def test_beneish_healthy_company_is_below_threshold(snapshot):

@@ -8,6 +8,9 @@ change, a simple stand-in for commissions, spread and slippage.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+
+from finance import indicators
 
 
 def strategy_returns(signal: np.ndarray, forward_returns: np.ndarray, cost: float) -> np.ndarray:
@@ -27,8 +30,10 @@ def sortino(returns: np.ndarray, periods_per_year: float) -> float | None:
 
 
 def max_drawdown(returns: np.ndarray) -> float:
-    equity = np.cumprod(1 + returns)
-    return float((equity / np.maximum.accumulate(equity) - 1).min())
+    """Drawdown of the equity curve these returns build. The curve starts at 1.0,
+    so a loss in the very first period counts; `indicators.max_drawdown` does the rest."""
+    equity = pd.Series(np.concatenate([[1.0], np.cumprod(1 + returns)]))
+    return indicators.max_drawdown(equity)
 
 
 def profit_factor(returns: np.ndarray) -> float | None:

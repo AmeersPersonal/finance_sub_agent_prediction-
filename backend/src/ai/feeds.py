@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import urllib.request
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
@@ -25,7 +27,18 @@ BLS_SERIES = {
     "payrolls_thousands": "CES0000000001",  # total nonfarm
 }
 CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
+CACHE_KEEP_DAYS = 7  # older daily BLS files are deleted; only today's is ever read
 TIMEOUT_SECONDS = 15
+_TAG = re.compile(r"<[^>]+>")
+
+
+@dataclass(frozen=True)
+class NewsItem:
+    title: str
+    link: str | None = None
+    published: str | None = None  # as the feed gives it
+    summary: str | None = None
+    source: str | None = None
 
 
 def _get(url: str, body: bytes | None = None) -> bytes:
@@ -36,13 +49,34 @@ def _get(url: str, body: bytes | None = None) -> bytes:
         return response.read()
 
 
+def _text(raw: str | None) -> str | None:
+    cleaned = html.unescape(_TAG.sub("", raw or "")).strip()
+    return cleaned or None
+
+
+def parse_rss_items(xml: bytes, limit: int = 10) -> list[NewsItem]:
+    items = []
+    for item in ElementTree.fromstring(xml).iter("item"):
+        title = _text(item.findtext("title"))
+        if title:
+            items.append(
+                NewsItem(
+                    title=title,
+                    link=_text(item.findtext("link")),
+                    published=_text(item.findtext("pubDate")),
+                    summary=_text(item.findtext("description")),
+                    source="Yahoo Finance",
+                )
+            )
+    return items[:limit]
+
+
 def parse_rss_titles(xml: bytes, limit: int = 10) -> list[str]:
-    titles = (item.findtext("title") for item in ElementTree.fromstring(xml).iter("item"))
-    return [html.unescape(t).strip() for t in titles if t and t.strip()][:limit]
+    return [item.title for item in parse_rss_items(xml, limit)]
 
 
-def fetch_headlines(ticker: str, limit: int = 10) -> list[str]:
-    return parse_rss_titles(_get(YAHOO_RSS.format(ticker=quote(ticker))), limit)
+def fetch_news(ticker: str, limit: int = 10) -> list[NewsItem]:
+    return parse_rss_items(_get(YAHOO_RSS.format(ticker=quote(ticker))), limit)
 
 
 def parse_bls(payload: dict) -> dict[str, pd.Series]:
@@ -67,7 +101,8 @@ def parse_bls(payload: dict) -> dict[str, pd.Series]:
 
 
 def fetch_bls(today: date | None = None, cache_dir: Path = CACHE_DIR) -> dict[str, pd.Series]:
-    cache = cache_dir / f"bls_{(today or date.today()).isoformat()}.json"
+    today = today or date.today()
+    cache = cache_dir / f"bls_{today.isoformat()}.json"
     if cache.exists():
         return parse_bls(json.loads(cache.read_text(encoding="utf-8")))
     body = json.dumps({"seriesid": list(BLS_SERIES.values())}).encode()
@@ -75,4 +110,17 @@ def fetch_bls(today: date | None = None, cache_dir: Path = CACHE_DIR) -> dict[st
     series = parse_bls(payload)  # raises before caching a failed response
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(payload), encoding="utf-8")
+    prune_cache(cache_dir, today)
     return series
+
+
+def prune_cache(cache_dir: Path, today: date, keep_days: int = CACHE_KEEP_DAYS) -> None:
+    """Delete daily BLS cache files older than `keep_days`. Only bls_<date>.json files
+    are touched; the prediction log is never pruned (it's the scoring record)."""
+    for path in cache_dir.glob("bls_*.json"):
+        try:
+            day = date.fromisoformat(path.stem.removeprefix("bls_"))
+        except ValueError:
+            continue
+        if (today - day).days > keep_days:
+            path.unlink(missing_ok=True)

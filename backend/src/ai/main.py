@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
 from ai.agents import PROMPT_VERSION, build_context, horizon_info, run_persona, strategy_documents
 from ai.confidence_score import aggregate
 from ai.evaluation import baselines
+from ai.live import LiveFeed, apply_live_quote
 from ai.llm import GeminiLLM, JsonLLM
+from ai.modes import DEFAULT_MODE, ReasoningMode
 from ai.personas import Strategy, build_personas
 from ai.schemas import Prediction
 from ai.sentiment import score_headlines
@@ -20,6 +22,7 @@ from finance.linear_regression import run_regression
 from finance.risk_management import atr_stop_distance, max_position_fraction
 
 RISK_BUDGET = 0.01  # the sizing example risks 1% of an account per position
+LARGE_PANEL_CALLS = 40  # beyond this the free Gemini tier spends most of its time in backoff
 
 
 def position_risk(snapshot: MarketSnapshot) -> dict:
@@ -41,15 +44,21 @@ async def predict(
     strategies: list[Strategy] | None = None,
     age_bands: list[str] | None = None,
     strategy_weights: Mapping[str, float] | None = None,
+    modes: Sequence[ReasoningMode] | None = None,
     llm: JsonLLM | None = None,
     snapshot: MarketSnapshot | None = None,
+    live_feed: LiveFeed | None = None,
 ) -> Prediction:
-    """`llm` and `snapshot` are injectable so tests run without network or API keys."""
+    """`llm`, `snapshot` and `live_feed` are injectable so tests run without network or
+    API keys. With a `live_feed`, the snapshot's last price comes from its first tick."""
     personas = build_personas(strategies, age_bands)
+    modes = tuple(modes or (DEFAULT_MODE,))
     llm = llm or GeminiLLM()
     snapshot = snapshot or await asyncio.to_thread(fetch_snapshot, ticker)
     close = snapshot.daily["Close"]
     warnings = [f"{source}: {why}" for source, why in snapshot.errors.items()]
+    if live_feed is not None and (warning := await apply_live_quote(snapshot, live_feed)):
+        warnings.append(warning)
 
     try:
         sentiment = await score_headlines(snapshot.ticker, snapshot.headlines, llm)
@@ -62,8 +71,15 @@ async def predict(
     contexts = {s: build_context(s, snapshot, horizon, sentiment) for s in used}
     docs = {s: strategy_documents(s, snapshot) for s in used}
 
+    calls = len(personas) * len(modes)
+    if calls > LARGE_PANEL_CALLS:
+        warnings.append(f"modes: {calls} persona calls; expect rate-limit backoff on the free tier")
     results = await asyncio.gather(
-        *(run_persona(p, contexts[p.strategy], docs[p.strategy], llm) for p in personas)
+        *(
+            run_persona(p, contexts[p.strategy], docs[p.strategy], llm, mode)
+            for p in personas
+            for mode in modes
+        )
     )
     if all(r.view is None for r in results):
         raise RuntimeError(f"All {len(results)} personas failed; first error: {results[0].error}")
@@ -88,8 +104,12 @@ async def predict(
         net_score=combined.net_score,
         agreement=combined.agreement,
         by_strategy=combined.by_strategy,
+        modes=[m.name for m in modes],
+        by_mode=combined.by_mode or {},
+        stability=combined.stability,
         flat_band_pct=horizon["flat_band_pct"],
         last_price=snapshot.last_price,
+        quote_source=snapshot.quote_source,
         data_as_of=str(snapshot.daily.index[-1].date()),
         next_earnings_date=horizon["next_earnings_date"],
         earnings_within_horizon=horizon["earnings_within_horizon"],
