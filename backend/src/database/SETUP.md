@@ -14,8 +14,12 @@ A separate PostgreSQL 18 instance is configured for this checkout:
 - Python environment: `backend/.venv/`.
 - User service: `hack-knight-postgres.service`, enabled to start at user login.
 
-The core migration has been applied. TimescaleDB is not installed/enabled in
-this instance. Existing system PostgreSQL clusters are separate and unchanged.
+Ordinary migrations through `005_document_title_search.sql` were applied and
+verified on this local application instance on October 10, 2026. The title GIN
+index was valid and ready, and its migration-history checksum matched the file.
+This status does not describe other developers' or cloud databases.
+TimescaleDB is not installed/enabled in this instance. Existing system PostgreSQL
+clusters are separate and unchanged.
 The configured Gemini key has been verified with a real structured-output request and a saved Nvidia forecast.
 
 Manage the running user service from a normal terminal:
@@ -113,8 +117,19 @@ python -m database.migrate --timescale
 
 Migration requires schema creation permissions; the TimescaleDB option also
 requires the extension to be available. Migration tracking permits reruns
-without rebuilding the database. Do not assume that running a migration
-populates historical articles or prices: it creates the storage structures.
+without rebuilding the database. The runner records each file's name and checksum
+in `schema_migrations`, skips applied files, and rejects edits to applied files.
+It applies all pending ordinary migrations, not just a named migration; inspect
+pending files before running it against an existing database. Prediction startup
+does not run migrations automatically.
+
+`005_document_title_search.sql` adds a GIN index on stored document titles. It
+covers existing rows and future inserts without re-ingesting documents or
+rewriting immutable chunks or evidence. Retrieval searches those titles alongside
+passage bodies. This ordinary PostgreSQL update does not require TimescaleDB or
+transfer data to another server. Every separately configured database needs its
+own migration check. Do not assume that running a migration populates historical
+articles or prices: it creates the storage structures.
 
 ## 4. Save and evaluate predictions
 

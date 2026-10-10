@@ -24,7 +24,7 @@ database. API tests use an in-process client with mocked services.
 | `test_pipeline.py` | `predict()` end to end with the fake LLM, including multi-mode runs; packets; prompt changelog |
 | `test_service.py`, `test_sources.py` | Ingestion/evidence orchestration and forecast options in `predict_and_store`; mocked online providers |
 | `test_model_data.py` | Stored-row conversion, timezone/session checks, and rejection of missing/invalid values |
-| `test_database.py` | Credential-safe configuration, frozen input packets, and opt-in local PostgreSQL persistence/constraints |
+| `test_database.py` | Credential-safe configuration, frozen input packets, opt-in local PostgreSQL persistence/constraints, title search across historical upgrades/new RSS ingestion, and the combined keyword/fallback passage cap |
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
 | `test_evaluation.py` | baselines, log, scorer (NYSE calendar, splits, pending reasons), derived strategy weights |
 | `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
@@ -48,6 +48,20 @@ database. API tests use an in-process client with mocked services.
 - PostgreSQL integration checks skip unless `TEST_DATABASE_URL` points to an
   isolated local Unix socket. They never connect to cloud services and use a
   temporary schema, removed after each test. See `database/SETUP.md`.
+
+## Retrieval regressions
+
+The PostgreSQL tests recreate the pre-title-index schema inside a disposable
+per-test schema, insert historical summary-only evidence, then apply migration
+`005` and verify that document/chunk records are unchanged. Both that historical
+document and a newly parsed RSS item must match a title-only keyword with
+positive relevance; a newer unrelated document must not replace them.
+
+Six parameterized cases cover zero, one, and two keyword hits with result limits
+of four and six. They verify the combined two-passages-per-document cap, unique
+chunks, keyword-first ordering, recency fallback, and filling from other
+documents. Existing tests cover source versions, future exclusion, and roles.
+Without `TEST_DATABASE_URL`, integration tests are skipped, not counted as passed.
 
 ## Commands
 

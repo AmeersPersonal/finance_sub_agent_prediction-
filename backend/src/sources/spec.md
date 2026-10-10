@@ -57,6 +57,10 @@ roles per strategy (see `database/spec.md`).
 
 This package only fetches public evidence. The database layer stores immutable
 versions and chunks; retrieval selects source-linked passages for each strategy.
+RSS items retain their title separately from the summary (or use the title as
+body text when no summary exists). Database retrieval searches both title and
+passage body, so title-only keywords work for existing and future rows without
+prepending titles to stored excerpts or rewriting evidence.
 Publication timestamps and first-seen timestamps must both precede a forecast's
 cutoff. Unknown publication timestamps remain null, not invented dates.
 

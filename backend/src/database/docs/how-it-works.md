@@ -47,10 +47,20 @@ Yahoo RSS provides linked headlines and available excerpts, not whole publisher
 articles. Optional SEC collection downloads primary company filing text when
 `SEC_USER_AGENT` supplies an application name and contact email.
 
-Documents are stored, split into passages, and searched by keywords (any keyword matches; more matches rank higher). Selected
-passages become evidence in Gemini's prompt: this is keyword RAG. Semantic
-vector search and general publisher scraping are future work. Each strategy
-gets a mix of company info, public opinion and product-event passages.
+Documents are stored and split into passages. Keyword search checks both each
+stored title and each passage body; any strategy keyword can match, and their
+full-text relevance scores are added. A word found only in a headline can
+therefore retrieve an older summary-only passage or a newly ingested one.
+Titles remain separate from excerpts, so evidence text is not rewritten.
+
+Selected passages become evidence in Gemini's prompt: this is keyword RAG.
+Each strategy gets a mix of company info, public opinion and product-event
+passages. Recent eligible passages fill unused keyword slots, with keyword
+matches first. A document contributes at most two passages across the combined
+keyword and fallback results; other documents fill remaining slots when
+available. Date cutoffs, source versions, lookbacks, and role filters still apply.
+Semantic vector search and general publisher scraping are future work. Retrieval
+correctness alone does not demonstrate improved prediction accuracy.
 
 Keeping the supplied text and dates preserves what the agent saw even if the
 original page changes. Missing sources produce warnings rather than invented

@@ -40,6 +40,7 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `migrations/002_timescale.sql` | Optional TimescaleDB extension and time partitioning for `price_bars` |
 | `migrations/003_dataset.sql` | Immutable per-forecast regression datasets (`model_datasets`) |
 | `migrations/004_evaluations_immutable.sql` | Append-only trigger for `evaluations` |
+| `migrations/005_document_title_search.sql` | English full-text GIN index on stored titles, covering existing and future documents without rewriting evidence |
 | `SETUP.md` | Cloud connection, private environment configuration, and CLI commands |
 | `local_postgres.sh` | Initialize and manage a separate persistent local PostgreSQL cluster in gitignored `backend/data/` |
 | `docs/README.md` | Short beginner guides to the schema, data flow, and future Tiger Cloud migration |
@@ -50,7 +51,7 @@ frontend. Semantic vector retrieval and account integration remain separate work
 |---|---|
 | `instruments` | A stock/ETF/bond/index identifier and its metadata; types do not imply corresponding forecasting support |
 | `price_bars` | Timestamped OHLCV records with interval, provider, adjustment basis, and fetch time |
-| `documents` | Versioned source content: headline, excerpt, or full text, with URL, dates, and content hash |
+| `documents` | Versioned source content: headline, excerpt, or full text, with URL, dates, content hash, and an English full-text title index |
 | `document_instruments` | Which instruments a document mentions |
 | `document_chunks` | Ordered text passages and an English full-text search index; no embeddings yet |
 | `fundamental_snapshots` | Company metrics as JSONB, with their availability and fetch times |
@@ -60,9 +61,13 @@ frontend. Semantic vector retrieval and account integration remain separate work
 | `evaluations` | Later observed price/return/direction, data basis, and evaluation payload |
 | `user_preferences` | External account reference, adult age band, strategy, experience, and optional preferences; no credentials |
 
-The migration runner tracks applied migrations separately. Foreign keys connect
-records, and composite keys prevent evidence from attaching a chunk to the
-wrong document or an output to the wrong prediction run.
+The migration runner records names and checksums in `schema_migrations`, skips
+applied files, and rejects changes to their contents. Run it explicitly for each
+configured database; prediction startup does not apply migrations. Ordinary
+PostgreSQL migrations include `005`; `002_timescale.sql` runs only with
+`--timescale`. Foreign keys connect records, and composite keys prevent evidence
+from attaching a chunk to the wrong document or an output to the wrong
+prediction run.
 
 ## Data flow
 
@@ -109,8 +114,37 @@ prediction creation explicitly fetch online sources. See [SETUP.md](SETUP.md).
 
 ## Current retrieval policy
 
-Long-term personas search the stored archive; day traders search the previous 7 days; index/options personas search 90 days. Company info (filings, press releases) uses at least 140 days for every strategy, since the latest 10-Q stays the company's current word for about a quarter. These are prototype settings, not validated optimal lookbacks. Each strategy receives up to six passages, at most two per document, mixed across the three evidence roles: each role is retrieved separately (`retrieve_passages(role=..., fill=True)`) and `service.mix_roles` takes them round-robin (company info, public opinion, product event), so a role with fewer passages leaves its slots to the others. Strategy keywords are ORed (a passage matching any keyword ranks; more matches rank higher); when nothing matches, or with `fill=True` when fewer than the limit match, the most recent company passages fill in, with relevance 0. Chunks are 1,600 characters with overlap; passage start offsets are capped at 560,000 characters per document while source text remains stored.
+Long-term personas search the stored archive; day traders search the previous
+7 days; index/options personas search 90 days. Company info (filings, press
+releases) uses at least 140 days for every strategy, since the latest 10-Q stays
+the company's current word for about a quarter. These are prototype settings,
+not validated optimal lookbacks. Retrieval uses the latest eligible version per
+source URL, respects first-seen and known publication cutoffs, and filters by
+instrument, lookback, and requested evidence role.
 
+Strategy keywords are ORed and matched against both the stored document title
+and passage body using English full-text search. Relevance is the sum of their
+`ts_rank_cd` scores; ties use first-seen recency and chunk ID. This makes a
+headline-only keyword searchable for historical summary-only chunks and future
+ingestion without re-ingesting sources. The title remains separate metadata;
+returned excerpt text, chunk IDs, content hashes, and saved evidence are not
+rewritten to include it. Migration `005` indexes `documents.title` alongside the
+existing passage-body index.
+
+Each strategy receives up to six passages mixed across three evidence roles.
+Each role is retrieved separately (`retrieve_passages(role=..., fill=True)`),
+and `service.mix_roles` takes them round-robin (company info, public opinion,
+product event), so a role with fewer passages leaves slots to the others.
+When nothing matches, or with `fill=True` when fewer than the limit match,
+recent eligible passages fill the remaining slots with relevance 0. Keyword
+matches stay first. The two-passages-per-document cap applies across the
+combined keyword and fallback results: fallback excludes selected chunks and
+subtracts each document's selected count from its remaining allowance before
+applying the limit, so other documents can fill available slots.
+
+Chunks are 1,600 characters with overlap; passage start offsets are capped at
+560,000 characters per document while source text remains stored. These
+retrieval rules do not establish an improvement in prediction accuracy.
 
 ## Numerical model input
 
