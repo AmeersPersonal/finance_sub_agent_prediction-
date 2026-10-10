@@ -25,6 +25,14 @@ def _json(value: Any) -> Any:
     return Jsonb(value)
 
 
+def persona_output_key(persona) -> str:
+    """One row per persona per reasoning mode. The default mode keeps the
+    pre-modes key, so rows saved before modes existed keep their meaning."""
+    if persona.mode == "default":
+        return f"persona:{persona.persona_id}"
+    return f"persona:{persona.persona_id}:{persona.mode}"
+
+
 class DatabaseRepository:
     """A repository using a psycopg connection configured with dict_row."""
 
@@ -96,7 +104,7 @@ class DatabaseRepository:
                 "by_strategy": prediction.by_strategy,
             }, direction=prediction.direction, confidence=prediction.confidence)
             for persona in prediction.personas:
-                self._output(prediction.id, f"persona:{persona.persona_id}", "persona",
+                self._output(prediction.id, persona_output_key(persona), "persona",
                              persona.model_dump(mode="json"), persona_id=persona.persona_id,
                              strategy=persona.strategy, age_band=persona.age_band,
                              direction=persona.view.direction if persona.view else None,

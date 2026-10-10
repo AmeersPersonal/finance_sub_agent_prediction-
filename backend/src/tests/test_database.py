@@ -337,3 +337,40 @@ def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):
     assert [r["document_id"] for r in filled] == [ids[0], ids[2], ids[1]]
     assert filled[0]["relevance"] > 0 and filled[1]["relevance"] == 0
     assert len(repo.retrieve_passages("TEST", "revenue", cutoff=cutoff, limit=2, fill=True)) == 2
+
+
+def test_multi_mode_forecast_saves_one_row_per_persona_and_mode(db, snapshot, fake_llm):
+    from ai.evaluation import score
+    from ai.modes import resolve_modes
+
+    p = asyncio.run(predict("TEST", snapshot=snapshot, llm=fake_llm, modes=resolve_modes("temps")))
+    repo = DatabaseRepository(db)
+    # Before the key included the mode, the second mode's row broke UNIQUE (run_id, output_key)
+    # and the whole save rolled back.
+    assert repo.save_prediction(p)
+    keys = [r["output_key"] for r in db.execute(
+        "SELECT output_key FROM prediction_outputs WHERE run_id = %s AND output_type = 'persona'",
+        (p.id,)).fetchall()]
+    assert len(keys) == len(set(keys)) == 13 * 3
+    assert "persona:long_term:25-39:t0.7" in keys
+    assert repo.get_prediction(p.id) == p
+    # Every persona-mode row gets its own evaluation.
+    closes = pd.Series(float(snapshot.daily["Close"].iloc[-1]) * 1.05,
+                       index=[d.date() for d in pd.bdate_range(p.data_as_of, periods=10)])
+    later = datetime(2026, 12, 31, 12, tzinfo=timezone.utc)  # after the synthetic outcome date
+    report = score([p], {"TEST": closes}, later)
+    assert report.scored == 1
+    repo.save_evaluations(report, evaluated_at=later)
+    evaluated = db.execute(
+        "SELECT count(*) AS n FROM evaluations e JOIN prediction_outputs o ON o.id = e.output_id "
+        "WHERE e.run_id = %s AND o.output_type = 'persona'", (p.id,)).fetchone()["n"]
+    assert evaluated == 13 * 3
+
+
+def test_default_mode_keeps_the_original_persona_key():
+    from ai.schemas import PersonaResult
+    from database.repository import persona_output_key
+
+    base = dict(persona_id="day_trader:18-24", strategy="day_trader", age_band="18-24")
+    assert persona_output_key(PersonaResult(**base)) == "persona:day_trader:18-24"
+    assert persona_output_key(PersonaResult(**base, mode="t1.0")) == "persona:day_trader:18-24:t1.0"
