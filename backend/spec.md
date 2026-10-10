@@ -7,6 +7,7 @@
 - [x] Decide whether `data/` needs a retention policy. Decision: `predictions.jsonl` is kept forever (it's the scoring record, a few KB per prediction, and only live-logged predictions can be scored); `cache/bls_<date>.json` files older than 7 days are deleted by `ai/feeds.prune_cache` whenever a new one is written.
 - [ ] Define retention and backup policies for database records (PostgreSQL); the JSONL decision above does not cover them.
 - [x] Add a lock file: `src/requirements.lock` is `pip-compile --generate-hashes` output (see Design notes).
+- [ ] Regenerate `src/requirements.lock` after the database merge: `requirements.txt` gained `psycopg[binary]` and `exchange_calendars`, which the lock doesn't contain yet, so `pip install --require-hashes -r requirements.lock` misses them (use `pip install -r requirements.txt` until then). Regenerate on Windows / Python 3.13 like the original, so Windows-only dependencies stay in.
 - [x] Decide on a home for non-Python tooling. Decision: a `Dockerfile` and `.dockerignore` go in `backend/` (build context `backend/`; `.dockerignore` must exclude `.env`, `.venv/` and `data/`); CI goes in the repo-root `.github/workflows/` (GitHub reads it only there) and runs from `backend/src/`. Nothing non-Python goes in `src/`.
 - [ ] If `predictions.jsonl` passes ~100 MB, rotate it by year (`predictions-2026.jsonl`) and make `load_log` read every file; never delete scored history.
 - [ ] Package deployment/startup for teammates and future hosting.
