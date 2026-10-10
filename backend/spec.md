@@ -3,31 +3,39 @@
 ## TODOS
 
 - [x] Add a pointer to `src/spec.md` in a README once `src/oauth/` has an API surface (`README.md`).
+- [x] Add navigation through `README.md` and beginner database guides.
 - [x] Decide whether `data/` needs a retention policy. Decision: `predictions.jsonl` is kept forever (it's the scoring record, a few KB per prediction, and only live-logged predictions can be scored); `cache/bls_<date>.json` files older than 7 days are deleted by `ai/feeds.prune_cache` whenever a new one is written.
+- [ ] Define retention and backup policies for database records (PostgreSQL); the JSONL decision above does not cover them.
 - [x] Add a lock file: `src/requirements.lock` is `pip-compile --generate-hashes` output (see Design notes).
 - [x] Decide on a home for non-Python tooling. Decision: a `Dockerfile` and `.dockerignore` go in `backend/` (build context `backend/`; `.dockerignore` must exclude `.env`, `.venv/` and `data/`); CI goes in the repo-root `.github/workflows/` (GitHub reads it only there) and runs from `backend/src/`. Nothing non-Python goes in `src/`.
 - [ ] If `predictions.jsonl` passes ~100 MB, rotate it by year (`predictions-2026.jsonl`) and make `load_log` read every file; never delete scored history.
+- [ ] Package deployment/startup for teammates and future hosting.
 
 ## Purpose
 
 Python backend of the finance sub-agent prediction project. AI agents imitate
 trader personas (strategy x age band) and their views are combined into one
 stock call (up / down / flat / unclear) over N trading days. Every call is
-logged beside naive baselines and a linear regression, then scored once its
+saved beside naive baselines and a linear regression, then scored once its
 horizon passes. A CLI (`src/main.py`) and an HTTP API (`src/api/`) run the same
-pipeline.
+pipeline. The CLI keeps the JSONL workflow; `--database` and the API persist to
+PostgreSQL with ingested market data, retrieved evidence and learning
+explanations. No real trades are executed.
 
 ## Layout
 
 ```
 backend/
-├── README.md       # setup and run commands; points to src/spec.md
+├── README.md       # setup and run commands; points to src/spec.md and the database guides
 ├── .env            # real secrets, gitignored, never read or print
-├── .env.example    # variable names only (GEMINI_*, OAUTH_*)
+├── .env.example    # variable names only (GEMINI_*, OAUTH_*, DATABASE_URL, SEC_USER_AGENT, ...)
 ├── .venv/          # local virtualenv, gitignored
 ├── data/           # runtime output, gitignored
-│   ├── predictions.jsonl     # prediction log (appended by the CLI and API, read by --score)
+│   ├── predictions.jsonl     # prediction log (appended by the CLI without --database, read by --score)
 │   ├── models/               # python -m ml ... --save: <name>-<time>.joblib + .json sidecar
+│   ├── postgres/             # persistent local PostgreSQL cluster
+│   ├── pgsocket/             # local admin connection socket
+│   ├── *.service             # generated local user-service definitions
 │   └── cache/bls_<date>.json # BLS keyless limit is 25 requests/day, so cached daily; kept 7 days
 └── src/            # all application code; see src/spec.md
 ```
@@ -40,7 +48,13 @@ backend/
   module (`Path(__file__).resolve().parents[2] / "data"`), so the working
   directory doesn't matter.
 - Secrets come from the environment only, loaded from `backend/.env` by
-  `src/main.py` and by the API at startup.
+  `src/main.py`, the API and migrations at startup.
+- `DATABASE_URL` chooses the database; replacing it does not transfer data.
+  PostgreSQL persistence is explicit with CLI `--database`; the API always uses
+  the database service. `--no-log` bypasses CLI persistence and ingestion.
+- Local server state is project-owned; cloud data would reside on Tiger Cloud.
+  TimescaleDB remains optional and requires its own migration. Setup, API
+  walkthrough and migration plan live under `src/database/`.
 - Dependencies: `src/requirements.txt` lists direct dependencies pinned with
   `==`; `src/requirements.lock` pins every transitive dependency with hashes.
   After changing `requirements.txt`, regenerate the lock from `backend/src/`

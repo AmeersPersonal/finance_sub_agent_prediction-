@@ -3,6 +3,9 @@
 Links, sources and dates come from the feed (ai/feeds.py), never from the
 model. The model refers to items only by number, so it can't invent a URL. The
 model is reached through ai/llm.py's `JsonLLM`, like every other call.
+
+`source_digest` lists the retrieved passages' sources for database-backed
+forecasts, with coverage and role, and never summarises an article.
 """
 
 from __future__ import annotations
@@ -62,3 +65,16 @@ async def news_digest(
             for i, n in enumerate(items, 1)
         ],
     }
+
+
+def source_digest(sources: list[dict]) -> list[dict]:
+    seen = set()
+    result = []
+    for source in sources:
+        if source['document_id'] in seen:
+            continue
+        seen.add(source['document_id'])
+        result.append({'title': source['title'], 'url': source['url'],
+                       'coverage': source['content_kind'], 'role': source.get('role', 'other'),
+                       'published_at': source['published_at']})
+    return result

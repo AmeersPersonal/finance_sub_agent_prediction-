@@ -12,7 +12,9 @@
 
 ## Purpose
 
-Fast, fully offline test suite. Nothing here may touch the network or Gemini.
+Synthetic tests make no external network or Gemini calls. PostgreSQL checks
+are opt-in and connect only through a local Unix socket to an isolated test
+database. API tests use an in-process client with mocked services.
 
 ## Layout
 
@@ -20,6 +22,9 @@ Fast, fully offline test suite. Nothing here may touch the network or Gemini.
 |---|---|
 | `conftest.py` | `snapshot` fixture (synthetic `MarketSnapshot` with quarterly statements and news), `fake_llm` / `failing_llm` (personas, sentiment, news digest), sample statements and Street data |
 | `test_pipeline.py` | `predict()` end to end with the fake LLM, including multi-mode runs; packets; prompt changelog |
+| `test_api.py`, `test_service.py`, `test_sources.py` | Dashboard validation/error handling, ingestion/evidence orchestration, and mocked online providers |
+| `test_model_data.py` | Stored-row conversion, timezone/session checks, and rejection of missing/invalid values |
+| `test_database.py` | Credential-safe configuration, frozen input packets, and opt-in local PostgreSQL persistence/constraints |
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
 | `test_evaluation.py` | baselines, log, scorer, stock splits, derived strategy weights |
 | `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
@@ -40,6 +45,9 @@ Fast, fully offline test suite. Nothing here may touch the network or Gemini.
 - The API and OAuth tests override FastAPI dependencies; never call real providers.
 - Keep the real `.env` out of tests: the API loads it only at startup, and CLI
   tests that call `main.main()` stub `load_dotenv`.
+- PostgreSQL integration checks skip unless `TEST_DATABASE_URL` points to an
+  isolated local Unix socket. They never connect to cloud services and use a
+  temporary schema, removed after each test. See `database/SETUP.md`.
 
 ## Commands
 
@@ -47,5 +55,9 @@ From `backend/src/`:
 
 ```
 pytest                                   # everything, offline
-pytest --cov --cov-report=term-missing   # with coverage (92% of non-test code at last count)
+pytest --cov --cov-report=term-missing   # with coverage
+TEST_DATABASE_URL='postgresql:///TEST_DB?host=/LOCAL_SOCKET_DIRECTORY' pytest   # plus PostgreSQL checks
 ```
+
+Live smoke checks (`python -m database.smoke TICKER`) are not part of pytest
+and do not measure forecast accuracy.

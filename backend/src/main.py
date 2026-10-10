@@ -103,6 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         f"{', '.join(FEATURE_FUNCTIONS)}",
     )
     parser.add_argument("--no-log", action="store_true", help="don't append to the prediction log")
+    parser.add_argument("--database", action="store_true", help="save/read predictions in PostgreSQL instead of JSONL")
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -334,26 +335,38 @@ async def _predict_all(
     failures = 0
     for ticker in args.tickers:
         try:
-            snapshot = await asyncio.to_thread(fetch_snapshot, ticker)
-            prediction = await predict(
-                ticker,
-                horizon_days=args.horizon,
-                strategies=[Strategy(s) for s in args.strategy] if args.strategy else None,
-                age_bands=args.age,
-                strategy_weights=weights,
-                modes=args.mode_list,
-                llm=llm,
-                snapshot=snapshot,
-                live_feed=feed,
-            )
-            if args.audit:
-                prediction.audit = await audit_prediction(prediction, snapshot, llm)
+            if args.database and not args.no_log:
+                from database.service import predict_and_store
+
+                prediction = await predict_and_store(
+                    ticker,
+                    horizon_days=args.horizon,
+                    strategies=[Strategy(s) for s in args.strategy] if args.strategy else None,
+                    age_bands=args.age,
+                    llm=llm,
+                )
+            else:
+                snapshot = await asyncio.to_thread(fetch_snapshot, ticker)
+                prediction = await predict(
+                    ticker,
+                    horizon_days=args.horizon,
+                    strategies=[Strategy(s) for s in args.strategy] if args.strategy else None,
+                    age_bands=args.age,
+                    strategy_weights=weights,
+                    modes=args.mode_list,
+                    llm=llm,
+                    snapshot=snapshot,
+                    live_feed=feed,
+                )
+                if args.audit:
+                    prediction.audit = await audit_prediction(prediction, snapshot, llm)
         except (RuntimeError, ValueError) as exc:  # bad ticker, all personas failed
             print(f"{ticker.upper()}: error: {exc}", file=sys.stderr)
             failures += 1
             continue
         if not args.no_log:
-            log_prediction(prediction, args.log_file)
+            if not args.database:
+                log_prediction(prediction, args.log_file)
         print(prediction.model_dump_json(indent=2) if args.json else render(prediction))
         print()
     return failures
@@ -363,16 +376,49 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
     load_dotenv(ENV_FILE)
+    from database.connection import DatabaseError
+
     failures = 0
-    report = score_log(args.log_file) if args.score else None
-    if report is not None:
-        print(render_report(report))
-    if args.tickers and args.backtest:
-        failures += run_backtests(args)
-    elif args.tickers:
-        failures += asyncio.run(_predict_all(args, resolve_weights(args, report)))
+    try:
+        if args.database:
+            from database.connection import connect
+
+            # Fail before spending Gemini calls if persistence isn't configured.
+            with connect() as connection:
+                connection.execute("SELECT id FROM prediction_runs LIMIT 0")
+        report = None
+        if args.score:
+            report = score_database() if args.database else score_log(args.log_file)
+            print(render_report(report))
+        if args.tickers and args.backtest:
+            failures += run_backtests(args)
+        elif args.tickers:
+            failures += asyncio.run(_predict_all(args, resolve_weights(args, report)))
+    except DatabaseError as exc:
+        print(str(exc), file=sys.stderr)
+        failures += 1
     if failures:
         sys.exit(1)
+
+
+def score_database() -> Report:
+    from datetime import date, datetime
+
+    from ai.evaluation import MARKET_TZ, fetch_closes, score
+    from database.connection import connect
+    from database.repository import DatabaseRepository
+
+    with connect() as connection:
+        predictions = DatabaseRepository(connection).load_predictions()
+    now = datetime.now(MARKET_TZ)
+    closes = fetch_closes(
+        (p.ticker for p in predictions),
+        min(date.fromisoformat(p.data_as_of) for p in predictions),
+    ) if predictions else {}
+    report = score(predictions, closes, now)
+    with connect() as connection:
+        DatabaseRepository(connection).save_evaluations(report)
+    return report
 
 
 if __name__ == "__main__":

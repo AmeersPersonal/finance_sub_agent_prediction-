@@ -32,7 +32,9 @@ Personas are **strategy × age band** (16–65):
 | `index_options` | Beta and relative strength vs S&P 500, sector ETF and Nasdaq-100; VIX; put/call ratios, ATM IV vs realized vol; short interest and its change; yields, CPI, unemployment, payrolls; headlines + sentiment score | 18–24, 25–39, 40–54, 55–65 |
 
 Deliberately not included (no free source): order-book depth / order flow
-(needs a paid Level 2 feed), social-media sentiment, IV rank (needs IV
+(needs a paid Level 2 feed), social-media sentiment (Reddit's Responsible
+Builder Policy requires approval and bars sharing its data, e.g. with Gemini;
+Hacker News threads are evidence passages, not a score), IV rank (needs IV
 history), GDP and the 2-year yield (FRED needs a key; its keyless CSV endpoint
 timed out from this network).
 
@@ -94,6 +96,10 @@ backend/
     │   ├── walkforward.py    # purged expanding-window evaluation, baselines, metrics, gates
     │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
     │   └── store.py          # save/load under data/models/ with a sidecar JSON
+    ├── api/                  # localhost FastAPI routes (database-backed) + OAuth router
+    ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
+    ├── audit/                # audit checklist and news digest; source digest and learning explanations
+    ├── database/             # migrations, repository, orchestration, setup/docs
     ├── oauth/                # Google OIDC sign-in (code + PKCE), in-memory sessions
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
@@ -131,10 +137,13 @@ pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage
 ```
 
-Environment variables: `GEMINI_API_KEY` (required), `GEMINI_MODEL` (optional,
-default `gemini-3.5-flash-lite`), `GEMINI_MODEL_STRONG` (optional, used by the
-`strong` reasoning modes), and for API sign-in `OAUTH_CLIENT_ID` /
-`OAUTH_CLIENT_SECRET` plus the optional `OAUTH_*` settings in `.env.example`.
+Environment variables: `GEMINI_API_KEY` (required for real predictions),
+`GEMINI_MODEL` (optional, default `gemini-3.5-flash-lite`), `GEMINI_MODEL_STRONG`
+(optional, used by the `strong` reasoning modes), `DATABASE_URL` for database
+operations, optional `SEC_USER_AGENT` for SEC filings and 8-K press releases,
+optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
+`OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` plus the optional `OAUTH_*` settings in
+`.env.example`.
 
 ## Hard rules
 
@@ -216,8 +225,40 @@ default `gemini-3.5-flash-lite`), `GEMINI_MODEL_STRONG` (optional, used by the
   bump `PROMPT_VERSION` in `agents.py` whenever prompts or packets change.
 - **Strength isn't probability.** Check `--score`'s by-strength table before
   presenting strength as a percentage chance.
-- **Scoring uses unadjusted closes** to match logged live prices, but Yahoo's
-  "unadjusted" closes are still split-adjusted after the fact, so `resolve`
-  divides the logged price by every split after the prediction's data date.
+- **Scoring restates prices to the logged share basis.** Yahoo closes are
+  split-adjusted after the fact, so `resolve` multiplies by every split after
+  the forecast date. Outcome dates come from the NYSE calendar. Missing split
+  history, a missing session bar, an unsettled session or an unknown basis
+  leaves the prediction pending rather than mis-scoring it.
 - **The regression baseline is below always-up** on average (39-41% vs 40-42%
   across 25 tickers; `finance/spec.md`). Always-up is the bar to beat.
+
+
+## Database-backed application
+
+Use `database.service.predict_and_store` for API and persisted CLI forecasts.
+It stores market data and documents before selecting point-in-time passages,
+then saves the prediction and supplied evidence atomically. Do not route the API
+through the JSONL-only path. `refresh_market` collects sources without Gemini.
+
+Source IDs cited by an agent are distinct from passages supplied to it. Preserve
+both. RSS descriptions are excerpts and Google News items are headlines, not
+complete articles or representative public opinion. Hacker News threads (keyless,
+always on) are tech-skewed discussion, not a sample of investors. SEC text is opt-in through a
+real application/contact identifier. Reddit was removed: its Responsible Builder
+Policy requires approval first and forbids sharing its data. Every document has a role
+(`company_info`, `public_opinion`, `product_event`) shown in the prompt, and
+retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
+retrieval and frontend wiring are not implemented. Record prompt changes in
+`agents.PROMPT_CHANGELOG` (and `ai/spec.md`).
+
+`database/SETUP.md` describes the project-owned local PostgreSQL and API user
+services. Service files, cluster files, and credentials stay gitignored. Use
+`database/docs/` for simple explanations and the future explicit cloud migration.
+Core PostgreSQL does not need TimescaleDB; the optional migration is deliberate.
+Do not assume a cloud connection change transfers data.
+
+For tests, mock all external sources and the LLM. Opt-in database tests permit
+only isolated local Unix sockets; never point them at `finance_dev` or cloud.
+Live provider verification is a separate authorized smoke check, not a pytest
+fixture. The API binds to loopback.

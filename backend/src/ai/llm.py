@@ -45,10 +45,13 @@ class GeminiLLM:
     ) -> None:
         if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
             raise RuntimeError("GEMINI_API_KEY is not set; add it to backend/.env")
-        self._client = genai.Client()
+        self._client = genai.Client(http_options=types.HttpOptions(timeout=30_000))
         self.model = model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._max_attempts = max_attempts
+
+    async def aclose(self) -> None:
+        await self._client.aio.aclose()
 
     async def generate_json(
         self,

@@ -168,3 +168,15 @@ def test_model_override_is_recorded(snapshot, fake_llm, monkeypatch):
         predict("TEST", llm=fake_llm, snapshot=snapshot, modes=resolve_modes("models"))
     )
     assert {r.model for r in prediction.personas} == {"fake-model", "big-model"}
+def test_regression_receives_explicit_database_dataset(snapshot, fake_llm, monkeypatch):
+    from finance.linear_regression import run_regression
+
+    stored = snapshot.daily[['Close', 'Volume']].copy()
+    received = []
+    def regression(data, horizon):
+        received.append(data)
+        return run_regression(data, horizon)
+    monkeypatch.setattr('ai.main.run_regression', regression)
+    prediction = asyncio.run(predict('TEST', snapshot=snapshot, llm=fake_llm, regression_daily=stored))
+    assert received[0] is stored
+    assert prediction.linear_regression is not None

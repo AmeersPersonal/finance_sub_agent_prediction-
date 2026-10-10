@@ -63,3 +63,6 @@ The current model scored 39.0% (1d) and 40.6% (5d) against always-up's 39.9%
 and 41.9%, and beat always-up on 28% / 40% of tickers. Differences of a fraction
 of a point are within noise at ~200 test days per ticker. Reproduce one ticker
 with `python main.py SPY --backtest --features return_1d,...,return_63d`.
+## Input adapter
+
+The regression accepts a pandas daily frame containing `Close` and `Volume`. Database-backed calls pass the frozen per-forecast copy from `database/datasets.py`; this module itself remains numerical and does not connect to PostgreSQL. It computes its existing seven features and forward-return targets from that frame.
