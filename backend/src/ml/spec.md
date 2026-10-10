@@ -13,7 +13,7 @@ stacker ~43-48%; realistic ceiling ~47-50%. Anything far above that is leakage.
 
 - [x] **Phase 0, capture training data first.** `Prediction.features` (`ai/schemas.py`) is filled in `ai/main.py` by `ai/features.extract_features` from the strategy packets, regression output and sentiment. Optional field, so old log lines still load; no prompt change, so no `PROMPT_VERSION` bump. Every prediction logged from now on carries its training row.
 - [x] **Framework: PyTorch with CUDA.** `model.get_device()` picks CUDA when it's available and CPU otherwise. `python ml/model.py` prints the device. TensorFlow was dropped because it has no GPU support on native Windows. For the GPU on Windows, run `pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu130 --force-reinstall --no-deps` after the requirements; the PyPI wheel is CPU-only.
-- [ ] **Phase 1, collect live predictions (no code).** Run 25+ tickers daily at the 1-day and 5-day horizons until about 300 predictions have resolved, then `python main.py --score`, `python -m ml coverage` and `python -m ml stacker`. Until then every accuracy figure for the personas is an estimate. Expected: 38-43% (1d) and 39-44% (5d) 3-way, against always-up at 39.9% / 41.9%.
+- [ ] **Phase 1, collect live predictions (no code).** Run 25+ tickers daily at the 1-day and 5-day horizons until about 300 predictions have resolved, then `python main.py --score`, `python -m ml coverage` and `python -m ml stacker`. Since the database merge, collect them in **one** store: either the database (`python main.py TICKERS --database`, or the API, which only saves there) and then add `--database` to all three commands, or the JSONL log without it. Predictions in one store are invisible to commands reading the other. Until then every accuracy figure for the personas is an estimate. Expected: 38-43% (1d) and 39-44% (5d) 3-way, against always-up at 39.9% / 41.9%.
 - [x] **Phase 2 levers: all built.** Each one is still to be judged against always-up on held-out dates once Phase 1 has data.
   1. [x] Accuracy at coverage: the top 50% and 30% of calls by strength, and calls where all strategies agree, each beside always-up on the same rows. It also reports the strength threshold to abstain below. See `calibration.accuracy_at_coverage` and `python -m ml coverage`.
   2. [x] Strength calibrated into P(call right), isotonic or Platt, and scored walk-forward by Brier against a constant hit rate (`calibration.StrengthCalibrator`, `evaluate_calibration`).
@@ -70,10 +70,15 @@ python -m ml price --horizon 20 --horizon 60    # lever 7 (not a gate run)
 python -m ml price AAPL MSFT NVDA --models logistic --save
 python -m ml stacker [--save]                   # model B, once 300 predictions have resolved
 python -m ml coverage                           # levers 1, 2, 5 on the scored log
+python -m ml stacker --database                 # the same on forecasts saved in PostgreSQL
+python -m ml coverage --database
 ```
 
 `price` downloads about 5 years of daily bars per ticker from Yahoo; `stacker`
-and `coverage` fetch closes to score the log. None of them call the LLM.
+and `coverage` fetch closes to score the log (or, with `--database`, the saved
+forecasts, appending any new outcomes to the `evaluations` table). None of them
+call the LLM. `Prediction.features` is stored in the database payload too, so
+`--include-packet` works either way.
 
 ## Gates
 

@@ -374,3 +374,18 @@ def test_cli_stacker_and_coverage_render_scored_outcomes(monkeypatch, capsys):
 def test_cli_rejects_unknown_models():
     with pytest.raises(SystemExit):
         cli.parse_args(["price", "--models", "lstm"])
+
+
+def test_cli_reads_saved_forecasts_with_database(monkeypatch, capsys):
+    from ai.evaluation import Report
+    from database import service
+
+    report = Report(scored=0, pending=2, unreadable=0, accuracy={}, coverage=None,
+                    accuracy_when_called=None, by_confidence={}, by_strategy={}, by_age_band={})
+    monkeypatch.setattr(cli, "score_log", lambda path: pytest.fail("--database must not read the log"))
+    monkeypatch.setattr(service, "score_database", lambda: report)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)  # keep the real .env out of tests
+    cli.main(["coverage", "--database"])
+    assert "No predictions have resolved yet (2 pending)" in capsys.readouterr().out
+    cli.main(["stacker", "--database"])
+    assert "blocked, 0 scored predictions" in capsys.readouterr().out

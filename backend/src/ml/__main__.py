@@ -6,6 +6,7 @@
     python -m ml price --models logistic --save # also fit on every row and store it
     python -m ml stacker [--save]               # model B; needs 300 scored predictions
     python -m ml coverage                       # levers 1, 2 and 5 on scored persona calls
+    python -m ml stacker --database             # the same, on forecasts saved in PostgreSQL
 
 An explicit command, never run at request time. `price` downloads daily bars
 from Yahoo; `stacker` and `coverage` score the prediction log (Yahoo closes).
@@ -38,6 +39,8 @@ from ml.walkforward import (
     evaluate_price_models,
     evaluate_stacker,
 )
+
+ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 # The 25-ticker set of the regression feature experiment (finance/spec.md).
 DEFAULT_TICKERS = (
@@ -77,6 +80,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     stacker = commands.add_parser("stacker", help="model B: learn how much to trust each persona")
     stacker.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
+    stacker.add_argument("--database", action="store_true",
+                         help="score forecasts saved in PostgreSQL (API, main.py --database) instead of the log")
     stacker.add_argument("--models", type=lambda s: _names(s, list(MODELS), "models"), default=("logistic",),
                          help=models_help + " (default logistic)")
     stacker.add_argument("--test-fraction", type=float, default=0.3)
@@ -89,6 +94,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     coverage = commands.add_parser("coverage", help="accuracy at coverage and strength calibration")
     coverage.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
+    coverage.add_argument("--database", action="store_true",
+                          help="score forecasts saved in PostgreSQL instead of the log")
 
     args = parser.parse_args(argv)
     if args.command == "price":
@@ -267,8 +274,24 @@ def render_coefficients(model: LogisticModel, columns: Sequence[str], top: int =
     return "\n".join(lines)
 
 
+def scored_predictions(args: argparse.Namespace):
+    """The scorer's report on the JSONL log, or on the database with --database.
+
+    The API saves forecasts only to PostgreSQL, so Phase 1 data collected through
+    it is visible here only with --database.
+    """
+    if not args.database:
+        return score_log(args.log_file)
+    from dotenv import load_dotenv
+
+    from database.service import score_database
+
+    load_dotenv(ENV_FILE)
+    return score_database()
+
+
 def run_stacker(args: argparse.Namespace) -> int:
-    scored = score_log(args.log_file)
+    scored = scored_predictions(args)
     data = stacker_rows(scored.outcomes, include_packet=args.include_packet)
     report = evaluate_stacker(
         data, args.models, args.test_fraction, args.refit_every, min_scored=args.min_scored
@@ -323,7 +346,7 @@ def render_coverage(tables: dict[str, list[CoverageRow]], calibration: Calibrati
 
 
 def run_coverage(args: argparse.Namespace) -> int:
-    report = score_log(args.log_file)
+    report = scored_predictions(args)
     if not report.outcomes:
         print(f"No predictions have resolved yet ({report.pending} pending).")
         return 0
