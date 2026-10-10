@@ -10,10 +10,15 @@ from database.connection import DatabaseError
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, fake_llm):
     monkeypatch.setattr(main, "_read", lambda method, *args, **kwargs: [])
-    with TestClient(main.app) as client:
-        yield client
+    # Never build a real Gemini client, whether or not a backend/.env key exists.
+    main.app.dependency_overrides = {main.get_llm: lambda: fake_llm}
+    try:
+        with TestClient(main.app) as client:
+            yield client
+    finally:
+        main.app.dependency_overrides = {}
 
 
 def test_history_and_news_normalize_ticker(client, monkeypatch):
