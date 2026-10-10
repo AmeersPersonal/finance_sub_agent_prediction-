@@ -324,6 +324,8 @@ class DatabaseRepository:
         `role` restricts to documents classified with that evidence role.
         `fill` tops keyword matches up to `limit` with the most recent other
         passages, so a role with one keyword hit still gets its share of slots.
+        Titles and passage bodies are searched without modifying source excerpts.
+        The two-passage document cap applies across keyword and fallback results.
         """
         # DOC_QUERIES are keyword bags. Remove query operators before binding OR.
         terms = re.findall(r"[^\W_]+", query, flags=re.UNICODE)
@@ -342,17 +344,21 @@ class DatabaseRepository:
             d.content_kind, d.document_type, d.classification,
             d.published_at, d.first_seen_at, left(c.content_text, 1600) AS text"""
         filters = (ticker.strip().upper(), cutoff, cutoff, since, since, role, role)
+        relevance = """(ts_rank_cd(to_tsvector('english', c.content_text), search.query)
+            + ts_rank_cd(to_tsvector('english', d.title), search.query))"""
         with self._transaction():
             matches = self.connection.execute(
                 available + ", search AS (SELECT websearch_to_tsquery('english', %s) AS query), ranked AS ("
-                + "SELECT " + fields + """,
-                    ts_rank_cd(to_tsvector('english', c.content_text), search.query) AS relevance,
+                + "SELECT " + fields + f""",
+                    {relevance} AS relevance,
                     row_number() OVER (PARTITION BY d.id ORDER BY
-                        ts_rank_cd(to_tsvector('english', c.content_text), search.query) DESC,
+                        {relevance} DESC,
                         c.chunk_index) AS passage_order
                     FROM available d JOIN document_chunks c ON c.document_id = d.id
                     CROSS JOIN search
                     WHERE to_tsvector('english', c.content_text) @@ search.query
+                       OR d.id IN (SELECT id FROM documents
+                           WHERE to_tsvector('english', title) @@ search.query)
                 ) SELECT * FROM ranked WHERE passage_order <= 2
                   ORDER BY relevance DESC, first_seen_at DESC, chunk_id LIMIT %s""",
                 (*filters, keyword_query, limit),
@@ -360,14 +366,21 @@ class DatabaseRepository:
             if limit <= 0 or len(matches) >= limit or (matches and not fill):
                 return matches
             return matches + self.connection.execute(
-                available + ", ranked AS (SELECT " + fields + """,
+                available + """, selected AS (
+                    SELECT document_id, count(*) AS passage_count
+                    FROM unnest(%s::bigint[]) AS picked(document_id)
+                    GROUP BY document_id
+                ), ranked AS (SELECT """ + fields + """,
                     0::real AS relevance,
                     row_number() OVER (PARTITION BY d.id ORDER BY c.chunk_index) AS passage_order
                     FROM available d JOIN document_chunks c ON c.document_id = d.id
                     WHERE c.id <> ALL(%s)
-                ) SELECT * FROM ranked WHERE passage_order <= 2
+                ) SELECT ranked.* FROM ranked
+                  LEFT JOIN selected USING (document_id)
+                  WHERE passage_order <= 2 - COALESCE(selected.passage_count, 0)
                   ORDER BY first_seen_at DESC, chunk_id LIMIT %s""",
-                (*filters, [m["chunk_id"] for m in matches], limit - len(matches)),
+                (*filters, [m["document_id"] for m in matches],
+                 [m["chunk_id"] for m in matches], limit - len(matches)),
             ).fetchall()
 
     def save_evidence(self, run_id: str, passage: dict, *, retrieved_at: datetime,
