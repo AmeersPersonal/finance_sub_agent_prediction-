@@ -13,14 +13,16 @@ outcomes it may have seen in training.
 from __future__ import annotations
 
 import logging
-from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import math
+
+import exchange_calendars as xcals
 import pandas as pd
 from pydantic import ValidationError
 
@@ -75,26 +77,84 @@ class Outcome:
     resolved_on: date
     return_pct: float
     actual: Direction
+    actual_price: float | None = None
+    price_basis: str = "prediction_share_basis"
+    reference_price: float | None = None
+    split_factor: float = 1.0  # provider close x split_factor = price in the logged share basis
 
 
 def resolve(prediction: Prediction, closes: pd.Series, now: datetime) -> Outcome | None:
-    """`closes` is indexed by date, ascending. None while the horizon is still open."""
-    dates = list(closes.index)
-    target = bisect_left(dates, date.fromisoformat(prediction.data_as_of)) + prediction.horizon_days
-    if target >= len(dates):
+    """Resolve an exact exchange session, preserving the logged entry price.
+
+    Injected plain Series are assumed to already use the prediction share basis.
+    Provider Series must declare their basis and complete corporate actions.
+    """
+    def refuse(reason: str) -> None:
+        log.warning("cannot score %s (%s): %s", prediction.ticker, prediction.data_as_of, reason)
         return None
-    resolved_on = dates[target]
-    local_now = now.astimezone(MARKET_TZ)
-    if resolved_on > local_now.date() or (
-        resolved_on == local_now.date() and local_now.time() < CLOSE_IS_FINAL
-    ):
+
+    if now.tzinfo is None:
+        return refuse("scoring time must be timezone-aware")
+    start = date.fromisoformat(prediction.data_as_of)
+    calendar_name = closes.attrs.get("calendar", "XNYS")
+    if calendar_name != "XNYS":
+        return refuse("unsupported or unverified exchange calendar")
+    try:
+        calendar = xcals.get_calendar("XNYS")
+        session = pd.Timestamp(start)
+        if not calendar.is_session(session):
+            return refuse("data date is not an exchange session")
+        target = calendar.session_offset(session, prediction.horizon_days)
+        resolved_on = target.date()
+        settled_at = calendar.session_close(target) + pd.Timedelta(minutes=30)
+    except (ValueError, KeyError, IndexError) as exc:
+        return refuse(f"exchange session unavailable: {exc}")
+    if pd.Timestamp(now) < settled_at:
         return None
-    ret = float(closes.iloc[target]) / prediction.last_price - 1
+    if not closes.index.is_unique:
+        return refuse("duplicate daily bars")
+    required = [s.date() for s in calendar.sessions_in_range(session, target)]
+    if any(d not in closes.index for d in required):
+        return refuse("missing required exchange-session bar")
+    if any(not math.isfinite(float(closes.loc[d])) or float(closes.loc[d]) <= 0 for d in required):
+        return refuse("invalid daily price")
+    if not math.isfinite(prediction.last_price) or prediction.last_price <= 0:
+        return refuse("invalid logged reference price")
+    price = float(closes.loc[resolved_on])
+    basis = closes.attrs.get("price_basis", "prediction_share_basis")
+    split_factor = 1.0
+    if basis == "yahoo_split_adjusted_close":
+        if not closes.attrs.get("actions_verified"):
+            return refuse("corporate-action history is unavailable")
+        # Yahoo's Close is retrospectively split-adjusted even with auto_adjust=False.
+        # Restore ALL splits after entry, including those after the outcome date.
+        splits = closes.attrs.get("stock_splits")
+        if not isinstance(splits, dict):
+            return refuse("corporate-action history is malformed")
+        for split_date, ratio in splits.items():
+            try:
+                action_date = date.fromisoformat(split_date)
+                ratio = float(ratio)
+            except (TypeError, ValueError):
+                return refuse("invalid split action")
+            if not math.isfinite(ratio) or ratio <= 0:
+                return refuse("invalid split ratio")
+            if action_date > start:
+                split_factor *= ratio
+        price *= split_factor
+    elif basis != "prediction_share_basis":
+        return refuse("unknown price adjustment basis")
+    ret = price / prediction.last_price - 1
+    if not math.isfinite(ret):
+        return refuse("invalid adjusted return")
     return Outcome(
         prediction=prediction,
         resolved_on=resolved_on,
         return_pct=round(ret * 100, 3),
         actual=classify_move(ret, prediction.flat_band_pct / 100),
+        actual_price=price,
+        reference_price=prediction.last_price,
+        split_factor=split_factor,
     )
 
 
@@ -169,18 +229,28 @@ def score(
 
 
 def fetch_closes(tickers: Iterable[str], since: date) -> dict[str, pd.Series]:
-    """Daily closes indexed by plain dates (not adjusted, to match logged live prices)."""
+    """Yahoo split-adjusted closes with explicit action and exchange provenance."""
     import yfinance as yf
 
     closes = {}
     for ticker in sorted(set(tickers)):
-        history = yf.Ticker(ticker).history(start=since.isoformat(), auto_adjust=False)
+        history = yf.Ticker(ticker).history(start=since.isoformat(), auto_adjust=False, actions=True)
         if history.empty:
             log.warning("no closes for %s; its predictions stay pending", ticker)
             continue
-        closes[ticker] = pd.Series(
+        series = pd.Series(
             history["Close"].to_numpy(), index=[ts.date() for ts in history.index]
         )
+        metadata = yf.Ticker(ticker).get_history_metadata()
+        # Only supported US equity venues share the XNYS session calendar here.
+        exchange = metadata.get("exchangeName") if isinstance(metadata, dict) else None
+        series.attrs.update(
+            price_basis="yahoo_split_adjusted_close",
+            actions_verified="Stock Splits" in history.columns,
+            calendar="XNYS" if exchange in {"NYQ", "NMS", "NGM", "NCM", "ASE", "PCX", "BTS"} else None,
+            stock_splits={ts.date().isoformat(): float(v) for ts, v in history.get("Stock Splits", pd.Series(dtype=float)).items() if v != 0},
+        )
+        closes[ticker] = series
     return closes
 
 

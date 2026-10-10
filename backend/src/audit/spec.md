@@ -2,24 +2,20 @@
 
 ## TODOS
 
-- [ ] **The whole folder is placeholder.** `analysis.py` and `info.py` are empty; `media.py` and `risk.py` contain only comments.
-- [ ] `media.py`: fetch company news and use `ai/llm.py` to produce concise TL;DRs with source links.
-- [ ] `risk.py`: decide how it differs from `finance/risk_management.py` (Altman Z, ATR sizing) before writing code; it should compose those, not duplicate them.
-- [ ] `analysis.py`: define its purpose (not stated anywhere) or delete it.
-- [ ] `info.py`: define its purpose (company overview?) or delete it.
-- [ ] Add `__init__.py` and tests under `tests/` using `fake_llm`.
-- [ ] Reach the model only through `ai/llm.py`, never the provider directly.
+- [ ] Define or remove unused `analysis.py` and `info.py` placeholders.
+- [ ] Add richer passage-based summaries after evaluating citation quality.
 
-## Purpose (intended)
+## Purpose
 
-Explain and sanity-check a prediction for a human reader: a short news/media
-digest with links, and a risk summary of the investment decision.
+Explain database-backed forecasts using known numbers and source metadata.
+No new LLM calls, numerical models, or fetching happen here.
 
-## Files
+| File | Role |
+|---|---|
+| `media.py` | Deduplicated source titles, URLs, publication dates, and coverage labels. This is a source digest, not an invented full-article summary. |
+| `risk.py` | Explains the forecast question, confidence, regression, flat/unclear, and existing risk calculations. Includes strategy learning context. |
+| `analysis.py`, `info.py` | Unused placeholders. |
 
-| File | Intended role | State |
-|---|---|---|
-| `media.py` | General company news -> concise TL;DRs and links, via the LLM in `ai/` | docstring only |
-| `risk.py` | Risk behind each investment decision | comment only |
-| `analysis.py` | Not defined | empty |
-| `info.py` | Not defined | empty |
+`database.service` attaches these explanations to `Prediction.learning` before
+saving it. Age alone is not a suitability assessment. A source listed as provided
+to Gemini is not automatically a source that supports every claim.

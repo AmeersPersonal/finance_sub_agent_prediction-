@@ -106,7 +106,7 @@ def test_predict_end_to_end(snapshot, fake_llm):
     assert "sharpe" in prediction.linear_regression["strategy"]
     assert fake_llm.sentiment_calls == 1 and prediction.headline_sentiment["overall"] == 0.4
     assert prediction.risk["max_position_pct_of_account_risking_1pct"] > 0
-    assert prediction.prompt_version == "3"
+    assert prediction.prompt_version == "4"
     for _, prompt in fake_llm.calls:
         assert _data_block(prompt)["ticker"] == "TEST"  # the data block is valid JSON
         assert f"+/-{prediction.flat_band_pct:g}%" in prompt
@@ -117,3 +117,17 @@ def test_one_failed_persona_does_not_sink_the_prediction(snapshot, failing_llm):
     failed = [p for p in prediction.personas if p.error]
     assert len(failed) == 3 and all(p.age_band == "55-65" for p in failed)
     assert prediction.direction == "up"
+
+
+def test_regression_receives_explicit_database_dataset(snapshot, fake_llm, monkeypatch):
+    from finance.linear_regression import run_regression
+
+    stored = snapshot.daily[['Close', 'Volume']].copy()
+    received = []
+    def regression(data, horizon):
+        received.append(data)
+        return run_regression(data, horizon)
+    monkeypatch.setattr('ai.main.run_regression', regression)
+    prediction = asyncio.run(predict('TEST', snapshot=snapshot, llm=fake_llm, regression_daily=stored))
+    assert received[0] is stored
+    assert prediction.linear_regression is not None

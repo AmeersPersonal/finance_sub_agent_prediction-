@@ -7,12 +7,15 @@ import dataclasses
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from ai.agents import PROMPT_VERSION, build_context, horizon_info, run_persona, strategy_documents
 from ai.confidence_score import aggregate
 from ai.evaluation import baselines
 from ai.llm import GeminiLLM, JsonLLM
 from ai.personas import Strategy, build_personas
 from ai.schemas import Prediction
+from ai.rag_retrieval import Snippet
 from ai.sentiment import score_headlines
 from ai.tool import MarketSnapshot, fetch_snapshot
 from finance.indicators import atr, flat_band
@@ -43,6 +46,8 @@ async def predict(
     strategy_weights: Mapping[str, float] | None = None,
     llm: JsonLLM | None = None,
     snapshot: MarketSnapshot | None = None,
+    documents_by_strategy: Mapping[Strategy, list[Snippet]] | None = None,
+    regression_daily: pd.DataFrame | None = None,
 ) -> Prediction:
     """`llm` and `snapshot` are injectable so tests run without network or API keys."""
     personas = build_personas(strategies, age_bands)
@@ -55,12 +60,15 @@ async def predict(
         sentiment = await score_headlines(snapshot.ticker, snapshot.headlines, llm)
     except Exception as exc:  # sentiment is an input, not a reason to fail the prediction
         sentiment = None
-        warnings.append(f"headline_sentiment: {type(exc).__name__}: {exc}")
+        warnings.append(f"headline_sentiment: {type(exc).__name__}: sentiment unavailable")
 
     horizon = horizon_info(snapshot, horizon_days, flat_band(close, horizon_days))
     used = {p.strategy for p in personas}
     contexts = {s: build_context(s, snapshot, horizon, sentiment) for s in used}
-    docs = {s: strategy_documents(s, snapshot) for s in used}
+    docs = {
+        s: list(documents_by_strategy.get(s, [])) if documents_by_strategy is not None else strategy_documents(s, snapshot)
+        for s in used
+    }
 
     results = await asyncio.gather(
         *(run_persona(p, contexts[p.strategy], docs[p.strategy], llm) for p in personas)
@@ -70,7 +78,7 @@ async def predict(
     combined = aggregate(results, strategy_weights)
 
     try:
-        regression = run_regression(snapshot.daily, horizon_days)
+        regression = run_regression(regression_daily if regression_daily is not None else snapshot.daily, horizon_days)
     except ValueError as exc:
         regression = None
         warnings.append(f"linear_regression: {exc}")
@@ -104,4 +112,11 @@ async def predict(
         prompt_version=PROMPT_VERSION,
         personas=list(results),
         data_warnings=warnings,
+        input_snapshot={
+            "fetched_at": snapshot.fetched_at.isoformat(),
+            "selected_strategies": sorted(s.value for s in used),
+            "selected_age_bands": sorted({p.age_band.label for p in personas}),
+            "strategy_packets": {s.value: context for s, context in contexts.items()},
+            "document_references": {s.value: [d.citation_id for d in snippets] for s, snippets in docs.items()},
+        },
     )

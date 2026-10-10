@@ -71,7 +71,11 @@ backend/
     │   ├── positioning.py    # insiders, institutions, short interest, analysts
     │   ├── macro.py          # yield curve, CPI, unemployment, payrolls
     │   └── revenue_forecast.py
-    ├── oauth/                # routes.py (in progress)
+    ├── api/                  # localhost FastAPI routes
+    ├── sources/              # linked RSS evidence and optional SEC filing text
+    ├── audit/                # source digest and educational risk explanations
+    ├── database/             # migrations, repository, orchestration, setup/docs
+    ├── oauth/                # auth placeholder; not imported by the dashboard API
     └── tests/                # offline: synthetic snapshot + fake LLM
 ```
 
@@ -97,8 +101,10 @@ python main.py --score                                # accuracy vs baselines, o
 pytest
 ```
 
-Environment variables: `GEMINI_API_KEY` (required) and `GEMINI_MODEL`
-(optional, default `gemini-3.5-flash-lite`).
+Environment variables: `GEMINI_API_KEY` for real predictions, optional
+`GEMINI_MODEL` (default `gemini-3.5-flash-lite`), `DATABASE_URL` for database
+operations, optional `SEC_USER_AGENT` for full primary SEC filings, and optional
+`API_CORS_ORIGINS` for local frontend development.
 
 ## Hard rules
 
@@ -162,5 +168,33 @@ Environment variables: `GEMINI_API_KEY` (required) and `GEMINI_MODEL`
   bump `PROMPT_VERSION` in `agents.py` whenever prompts or packets change.
 - **Strength isn't probability.** Check `--score`'s by-strength table before
   presenting strength as a percentage chance.
-- **Scoring uses unadjusted closes** to match logged live prices. A stock split
-  inside a horizon would mis-score that prediction.
+- **Scoring restates prices to the logged share basis.** Yahoo closes are
+  split-adjusted after the fact, so `resolve` multiplies by every split after
+  the forecast date. Missing split history, a missing session bar, or an
+  unknown basis leaves the prediction pending rather than mis-scoring it.
+
+
+## Database-backed application
+
+Use `database.service.predict_and_store` for API and persisted CLI forecasts.
+It stores market data and documents before selecting point-in-time passages,
+then saves the prediction and supplied evidence atomically. Do not route the API
+through the JSONL-only path. `refresh_market` collects sources without Gemini.
+
+Source IDs cited by an agent are distinct from passages supplied to it. Preserve
+both. RSS descriptions are excerpts, not complete articles or representative
+public opinion. SEC primary text is opt-in through a real application/contact
+identifier. Semantic vector retrieval, Reddit, frontend wiring, and account
+integration are not implemented. Record prompt changes in `ai/spec.md`; current
+version 4 adds provided online sources and citations.
+
+`database/SETUP.md` describes the project-owned local PostgreSQL and API user
+services. Service files, cluster files, and credentials stay gitignored. Use
+`database/docs/` for simple explanations and the future explicit cloud migration.
+Core PostgreSQL does not need TimescaleDB; the optional migration is deliberate.
+Do not assume a cloud connection change transfers data.
+
+For tests, mock all external sources and the LLM. Opt-in database tests permit
+only isolated local Unix sockets; never point them at `finance_dev` or cloud.
+Live provider verification is a separate authorized smoke check, not a pytest
+fixture. The API currently binds to loopback and exposes no user preferences.

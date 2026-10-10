@@ -2,38 +2,46 @@
 
 ## TODOS
 
-- [ ] Add a pointer to `src/spec.md` in a README once `src/oauth/` has an API surface.
-- [ ] Decide whether `data/` needs a retention policy (the prediction log grows forever).
-- [ ] Add a lock file or `pip-compile` output; `src/requirements.txt` is pinned but has no hashes.
-- [ ] Decide on a home for non-Python tooling (Dockerfile, CI config) before it lands in `src/`.
+- [x] Add navigation through `README.md` and beginner database guides.
+- [ ] Define retention and backup policies for database records and runtime files.
+- [ ] Add a dependency lock file or hashes beyond pinned package versions.
+- [ ] Package deployment/startup for teammates and future hosting.
 
 ## Purpose
 
-Python backend of the finance sub-agent prediction project. AI agents imitate
-trader personas (strategy x age band) and their views are combined into one
-stock call (up / down / flat / unclear) over N trading days. Every call is
-logged beside naive baselines and a linear regression, then scored once its
-horizon passes.
+Python backend for the finance learning project. Gemini personas form a combined
+up/down/flat/unclear forecast. An independent regression provides a historical
+benchmark. Outcomes are evaluated after the trading-day horizon passes.
+
+The CLI supports the original JSONL workflow. Database-backed CLI calls and the
+local FastAPI server add market/document ingestion, keyword retrieval, evidence
+links, and learning explanations. No real trades are executed.
 
 ## Layout
 
 ```
 backend/
-├── .env            # real secrets, gitignored, never read or print
-├── .env.example    # variable names only (GEMINI_API_KEY, GEMINI_MODEL)
-├── .venv/          # local virtualenv, gitignored
-├── data/           # runtime output, gitignored
-│   ├── predictions.jsonl     # prediction log (appended by main.py, read by --score)
-│   └── cache/bls_<date>.json # BLS keyless limit is 25 requests/day, so cached daily
-└── src/            # all application code; see src/spec.md
+├── README.md       # guide navigation
+├── .env            # private secrets; loaded normally, never inspected or printed
+├── .env.example    # variable names and placeholders only
+├── .venv/          # local Python environment, gitignored
+├── data/           # local runtime state, gitignored
+│   ├── postgres/   # persistent local PostgreSQL cluster
+│   ├── pgsocket/   # local admin connection socket
+│   ├── *.service   # generated local user-service definitions
+│   ├── predictions.jsonl
+│   └── cache/
+└── src/            # application packages; see src/spec.md
 ```
 
 ## Design notes
 
-- `src/` is the import root (`pythonpath = .` in `src/pytest.ini`); run
-  everything from `backend/src/`.
-- `data/` is the only place the app writes. Paths are resolved relative to the
-  module (`Path(__file__).resolve().parents[2] / "data"`), so the working
-  directory doesn't matter.
-- Secrets come from the environment only, loaded from `backend/.env` by
-  `src/main.py`.
+- `src/` is the import root. Run commands from `backend/src/`.
+- CLI, API, and migration entry points load the private backend environment.
+- `DATABASE_URL` chooses the database; replacing it does not transfer data.
+- PostgreSQL persistence is explicit with CLI `--database`; API operations use
+  the database service. `--no-log` bypasses CLI persistence and ingestion.
+- Local server state is project-owned; cloud data would reside on Tiger Cloud.
+  TimescaleDB remains optional and requires its own migration.
+- Account authorization is not implemented. Local API service binds to loopback.
+- Setup, API walkthrough, and migration plan live under `src/database/`.

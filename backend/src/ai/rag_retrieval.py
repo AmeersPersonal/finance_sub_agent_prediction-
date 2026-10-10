@@ -20,6 +20,15 @@ _WORD = re.compile(r"[a-z0-9&]{3,}")
 class Snippet:
     source: str  # path relative to the docs folder
     text: str
+    document_id: int | None = None
+    chunk_id: int | None = None
+    url: str | None = None
+    title: str | None = None
+    content_kind: str | None = None
+
+    @property
+    def citation_id(self) -> str:
+        return f"doc-{self.document_id}-chunk-{self.chunk_id}" if self.document_id is not None else self.source
 
 
 def _terms(text: str) -> set[str]:

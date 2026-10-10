@@ -34,3 +34,7 @@ return numbers or small dicts, returning `None` when data is missing.
 - Return `None` instead of raising when an input is missing; raise `ValueError` only for invalid arguments.
 - Financial-sector companies are excluded from Altman Z and Beneish (`NOT_APPLICABLE_SECTORS`).
 - No imports from `ai/`.
+
+## Input adapter
+
+The regression accepts a pandas daily frame containing `Close` and `Volume`. Database-backed calls pass the frozen per-forecast copy from `database/datasets.py`; this module itself remains numerical and does not connect to PostgreSQL. It computes its existing seven features and forward-return targets from that frame.

@@ -26,6 +26,7 @@ class PersonaView(BaseModel):
     key_factors: list[str] = Field(
         description="Up to four data points from the input that drove the view"
     )
+    source_ids: list[str] = Field(default_factory=list, description="IDs of provided source passages actually used; do not invent IDs")
 
 
 class PersonaResult(BaseModel):
@@ -63,3 +64,9 @@ class Prediction(BaseModel):
     prompt_version: str
     personas: list[PersonaResult]
     data_warnings: list[str]
+    input_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Frozen numeric/headline packets supplied to personas; excludes private document text",
+    )
+    sources: list[dict[str, Any]] = Field(default_factory=list, description="Source links provided to agents; inclusion is not proof of support")
+    learning: dict[str, Any] = Field(default_factory=dict, description="Educational explanation of this forecast and its limits")

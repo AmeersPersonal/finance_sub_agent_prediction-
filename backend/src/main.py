@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="print the full prediction as JSON")
     parser.add_argument("--score", action="store_true", help="score the prediction log")
     parser.add_argument("--no-log", action="store_true", help="don't append to the prediction log")
+    parser.add_argument("--database", action="store_true", help="save/read predictions in PostgreSQL instead of JSONL")
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -149,18 +150,23 @@ async def _predict_all(args: argparse.Namespace) -> int:
     failures = 0
     for ticker in args.tickers:
         try:
-            prediction = await predict(
+            predictor = predict
+            if args.database and not args.no_log:
+                from database.service import predict_and_store
+                predictor = predict_and_store
+            prediction = await predictor(
                 ticker,
                 horizon_days=args.horizon,
                 strategies=[Strategy(s) for s in args.strategy] if args.strategy else None,
                 age_bands=args.age,
             )
         except (RuntimeError, ValueError) as exc:  # missing key, bad ticker, all personas failed
-            print(f"{ticker.upper()}: error: {exc}", file=sys.stderr)
+            print(f"{ticker.upper()}: prediction unavailable ({type(exc).__name__}). Check model/data availability.", file=sys.stderr)
             failures += 1
             continue
         if not args.no_log:
-            log_prediction(prediction, args.log_file)
+            if not args.database:
+                log_prediction(prediction, args.log_file)
         print(prediction.model_dump_json(indent=2) if args.json else render(prediction))
         print()
     return failures
@@ -170,10 +176,45 @@ def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
     load_dotenv(ENV_FILE)
-    if args.score:
-        print(render_report(score_log(args.log_file)))
-    if args.tickers and asyncio.run(_predict_all(args)):
+    from database.connection import DatabaseError
+
+    try:
+        if args.database:
+            from database.connection import connect
+
+            # Fail before spending Gemini calls if persistence isn't configured.
+            with connect() as connection:
+                connection.execute("SELECT id FROM prediction_runs LIMIT 0")
+        if args.score:
+            if args.database:
+                print(render_report(score_database()))
+            else:
+                print(render_report(score_log(args.log_file)))
+        if args.tickers and asyncio.run(_predict_all(args)):
+            sys.exit(1)
+    except DatabaseError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
+
+
+def score_database() -> Report:
+    from datetime import date, datetime
+
+    from ai.evaluation import MARKET_TZ, fetch_closes, score
+    from database.connection import connect
+    from database.repository import DatabaseRepository
+
+    with connect() as connection:
+        predictions = DatabaseRepository(connection).load_predictions()
+    now = datetime.now(MARKET_TZ)
+    closes = fetch_closes(
+        (p.ticker for p in predictions),
+        min(date.fromisoformat(p.data_as_of) for p in predictions),
+    ) if predictions else {}
+    report = score(predictions, closes, now)
+    with connect() as connection:
+        DatabaseRepository(connection).save_evaluations(report)
+    return report
 
 
 if __name__ == "__main__":

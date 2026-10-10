@@ -1,0 +1,194 @@
+"""Offline ingestion, grounded-prompt, and persistence service checks."""
+import asyncio
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from ai.personas import Strategy
+from ai.schemas import PersonaView
+from database import service
+from sources import DocumentCollection, SourceDocument
+
+
+@pytest.fixture
+def repository(monkeypatch):
+    state = SimpleNamespace(events=[], bars=[], fundamentals=[], documents=[], chunks=[],
+                            passages=[], retrievals=[], predictions=[], evidence=[], loaded=None,
+                            datasets={})
+    class Repo:
+        def __init__(self, connection): pass
+        def save_price_bars(self, ticker, bars, **kwargs):
+            rows = list(bars)
+            state.bars.append((ticker, rows, kwargs))
+            return len(rows)
+        def save_fundamental_snapshot(self, ticker, payload, **kwargs):
+            state.fundamentals.append((ticker, payload, kwargs))
+        def get_model_price_rows(self, ticker, **kwargs):
+            return [row for stored_ticker, bars, opts in state.bars
+                    if stored_ticker == ticker and opts['interval'] == '1d'
+                    for row in bars]
+        def store_document(self, **kwargs):
+            state.documents.append(kwargs)
+            return len(state.documents)
+        def store_chunks(self, document_id, passages):
+            state.chunks.append((document_id, list(passages)))
+        def retrieve_passages(self, ticker, query, **kwargs):
+            state.retrievals.append((ticker, query, kwargs))
+            return state.passages
+        def save_prediction(self, prediction):
+            state.predictions.append(prediction)
+            return True
+        def save_evidence(self, run_id, passage, **kwargs):
+            state.evidence.append((run_id, passage, kwargs))
+        def get_prediction(self, prediction_id): return state.loaded
+        def save_evaluations(self, report): state.events.append('evaluation_saved')
+        def get_evaluations(self, prediction_id): return []
+    class Connection:
+        """Enough of psycopg for the health check and the real DatasetStore."""
+        def execute(self, sql, params=()):
+            if sql.startswith('INSERT INTO model_datasets'):
+                dataset_id, *_rest, metadata, price_rows = params
+                state.datasets[dataset_id] = {'metadata': metadata.obj, 'price_rows': price_rows.obj}
+                return SimpleNamespace(fetchone=lambda: None)
+            if 'FROM model_datasets' in sql:
+                return SimpleNamespace(fetchone=lambda: state.datasets.get(params[0]))
+            state.events.append('database_checked')
+            return SimpleNamespace(fetchone=lambda: None)
+    @contextmanager
+    def connect():
+        yield Connection()
+    monkeypatch.setattr(service, 'connect', connect)
+    monkeypatch.setattr(service, 'DatabaseRepository', Repo)
+    return state
+
+
+@pytest.fixture
+def offline_sources(monkeypatch, snapshot, repository):
+    def fetch(ticker):
+        repository.events.append('market_fetched')
+        return snapshot
+    def documents(ticker, **kwargs):
+        repository.events.append('documents_fetched')
+        return DocumentCollection()
+    monkeypatch.setattr(service, 'fetch_snapshot', fetch)
+    monkeypatch.setattr(service, 'fetch_documents', documents)
+
+
+def test_clean_json_missing_values():
+    assert service._clean({'missing': np.nan, 'infinite': float('inf'),
+                           'nested': (np.int64(5), float('-inf'))}) == {
+                               'missing': None, 'infinite': None, 'nested': [5, None]}
+
+
+def test_bars_and_fundamentals_preserve_provenance(repository, snapshot):
+    snapshot.daily = pd.DataFrame({'Close': [100., np.nan], 'Volume': [10., 20.]},
+                                 index=pd.to_datetime(['2026-01-15', '2026-01-16']))
+    result = service._persist_snapshot(snapshot, DocumentCollection())
+    _, bars, options = repository.bars[0]
+    assert len(bars) == 1
+    assert bars[0]['bar_at'].utcoffset() == timedelta(hours=-5)
+    assert bars[0]['fetched_at'] == snapshot.fetched_at
+    assert bars[0]['open'] is None
+    assert options == {'interval': '1d', 'adjustment_basis': 'total_return'}
+    assert repository.bars[1][2] == {'interval': '5m', 'adjustment_basis': 'total_return'}
+    _, payload, provenance = repository.fundamentals[0]
+    assert payload['company_info']['shortName'] == 'Test Corp'
+    assert provenance['available_at'] == snapshot.fetched_at
+    assert 'publication dates unknown' in provenance['metadata']['availability_basis']
+    assert result['new_daily_bars'] == 1
+
+
+def test_evidence_reaches_prompt_and_tracks_supplied_vs_cited(
+        monkeypatch, repository, offline_sources, snapshot, fake_llm):
+    at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    document = SourceDocument('https://example.com/release', 'Test earnings',
+                              'Synthetic verified earnings passage.', 'news', 'feed_excerpt',
+                              'Example', at, at)
+    monkeypatch.setattr(service, 'fetch_documents', lambda *_args, **_kwargs:
+                        DocumentCollection([document]))
+    def passage(chunk_id, text):
+        return dict(document_id=1, chunk_id=chunk_id, text=text,
+                    source_url=document.source_url, title=document.title,
+                    content_kind='feed_excerpt', published_at=at, first_seen_at=at)
+    repository.passages = [passage(11, document.content_text), passage(12, 'Additional risk evidence.')]
+    original = fake_llm.generate_json
+    async def citing_llm(system, prompt, schema):
+        if schema is PersonaView:
+            fake_llm.calls.append((system, prompt))
+            return PersonaView(direction='up', conviction=.6, rationale='Evidence supports growth',
+                               key_factors=[], source_ids=['doc-1-chunk-11', 'invented-id', 'doc-1-chunk-11'])
+        return await original(system, prompt, schema)
+    fake_llm.generate_json = citing_llm
+    p = asyncio.run(service.predict_and_store(' test ', strategies=[Strategy.LONG_TERM],
+                                             age_bands=['18-24'], llm=fake_llm))
+    assert repository.events[:2] == ['database_checked', 'market_fetched']
+    assert repository.documents[0]['content_text'] == document.content_text
+    assert repository.chunks == [(1, [document.content_text])]
+    assert document.content_text in fake_llm.calls[0][1]
+    assert '[doc-1-chunk-11]' in fake_llm.calls[0][1]
+    assert p.personas[0].view.source_ids == ['doc-1-chunk-11']
+    assert len(p.sources) == 2
+    assert p.sources[0]['cited_by'] == [p.personas[0].persona_id]
+    assert p.sources[1]['cited_by'] == []
+    assert len(repository.evidence) == 2
+    assert repository.evidence[0][2]['cited_by'] == [p.personas[0].persona_id]
+    assert repository.evidence[1][2]['cited_by'] == []
+    assert repository.evidence[0][2]['retrieved_at'].isoformat() == p.input_snapshot['evidence_cutoff_at']
+    assert repository.predictions == [p]
+    assert p.input_snapshot['regression_dataset']['source'] == 'postgresql'
+    assert p.input_snapshot['regression_dataset']['rows'] == len(snapshot.daily)
+    # The regression input is a frozen copy of exactly what the personas saw.
+    saved = repository.datasets[p.input_snapshot['regression_dataset']['dataset_id']]
+    assert saved['metadata']['table'] == 'model_datasets'
+    assert saved['price_rows'][-1]['close'] == pytest.approx(float(snapshot.daily['Close'].iloc[-1]))
+
+
+def test_no_sources_warns_and_still_saves(repository, offline_sources, fake_llm):
+    p = asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.DAY_TRADER],
+                                             age_bands=['18-24'], llm=fake_llm))
+    assert p.sources == []
+    assert any('No online documents retrieved' in warning for warning in p.data_warnings)
+    assert repository.predictions == [p]
+    assert repository.evidence == []
+
+
+def test_database_failure_precedes_external_fetch(monkeypatch, offline_sources, repository, fake_llm):
+    def fail(): raise RuntimeError('database unavailable')
+    monkeypatch.setattr(service, '_check_database', fail)
+    with pytest.raises(RuntimeError, match='database unavailable'):
+        asyncio.run(service.predict_and_store('TEST', llm=fake_llm))
+    assert repository.events == []
+    assert fake_llm.calls == []
+
+
+@pytest.mark.parametrize('ticker,horizon', [('bad ticker', 5), ('TEST', 0), ('TEST', 253)])
+def test_invalid_request_precedes_external_calls(ticker, horizon, repository, offline_sources, fake_llm):
+    with pytest.raises(ValueError):
+        asyncio.run(service.predict_and_store(ticker, horizon_days=horizon, llm=fake_llm))
+    assert repository.events == []
+
+
+def test_retrieval_windows(repository):
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    service._retrieve('TEST', set(Strategy), cutoff)
+    windows = {args['since'] for _, _, args in repository.retrievals}
+    assert windows == {None, cutoff - timedelta(days=7), cutoff - timedelta(days=90)}
+    assert all(args['cutoff'] == cutoff for _, _, args in repository.retrievals)
+
+
+def test_missing_evaluation_does_not_fetch(monkeypatch, repository):
+    monkeypatch.setattr(service, 'fetch_closes', lambda *_: pytest.fail('Missing prediction fetched prices'))
+    with pytest.raises(LookupError, match='Prediction not found'):
+        asyncio.run(service.evaluate_prediction('missing'))
+
+
+def test_pending_evaluation_has_no_invented_outcome(monkeypatch, repository):
+    repository.loaded = SimpleNamespace(ticker='TEST', data_as_of='2026-10-09')
+    monkeypatch.setattr(service, 'fetch_closes', lambda *_: {})
+    monkeypatch.setattr(service, 'score', lambda *_: SimpleNamespace(pending=1, scored=0))
+    assert asyncio.run(service.evaluate_prediction('pending')) == {
+        'prediction_id': 'pending', 'pending': True, 'scored': 0, 'evaluations': []}
