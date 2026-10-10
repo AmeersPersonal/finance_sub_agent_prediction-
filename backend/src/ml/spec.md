@@ -35,6 +35,52 @@ stacker ~43-48%; realistic ceiling ~47-50%. Anything far above that is leakage.
 - [ ] Only if a model passes the model A gate: re-test it with whole tickers held out of training, the stricter reading of "held-out tickers".
 - [ ] A FinBERT-style per-headline score, tried as a *feature*, not as a predictor.
 
+## Notes from the database merge (2026-10-10)
+
+For whoever builds the "mimic live data" run. What changed under `ml/`:
+
+- **Scorer.** `ai/evaluation.py` now uses the database branch's scorer: outcome
+  dates come from the NYSE calendar (holidays and early closes handled), a bar
+  is final 30 min after the close, and a missing bar, unverified split history
+  or unknown exchange leaves a prediction pending instead of scoring another
+  day. `fetch_history` is gone: `fetch_closes` returns closes whose split
+  history travels in `series.attrs`. `resolve()` keeps its Outcome-or-None
+  contract; `assess()` also says *why* one is pending (`Report.pending_details`).
+  Per-mode/per-model accuracy and `derive_strategy_weights` are unchanged.
+- **Prompt version 6** = the database branch's changes: personas get retrieved
+  news/filing passages labelled by role. Direct `predict()` without
+  `documents_by_strategy` falls back to `ai/docs/`, which is empty.
+- **Where predictions live.** The API saves only to PostgreSQL. `python -m ml
+  stacker --database` / `coverage --database` read those; without the flag
+  they read the JSONL log. Don't mix the two stores in one training set.
+- **Persona rows per mode** are stored as `persona:<id>:<mode>` (default mode
+  keeps `persona:<id>`).
+
+If you train model B on backdated (replayed) predictions instead of live ones,
+these are the traps we found while checking the same idea:
+
+- Only **prices** can be cut back to a past date (`database/smoke.py`'s
+  `backdated()` shows how: daily, market, Nasdaq, sector and VIX frames,
+  `intraday=None`, `last_price`, `previous_close`, `fetched_at`). Fundamentals,
+  analyst targets and rating changes, insiders, institutions, options, short
+  interest and the earnings calendar are **today's values**; headlines and the
+  stored documents are too (the database only has documents from 2026-10-09).
+  Left in, they leak the outcome into the persona call *and* into
+  `Prediction.features` (so `--include-packet` would learn from them). Null
+  them or list them as unavailable.
+- Keep backdated runs in their own JSONL file with a warning in
+  `data_warnings`; never save them to the database, where they would mix with
+  live forecasts and their evaluations.
+- Check the Gemini model's training cutoff against the replayed dates, and
+  freeze the prompt version and modes for the whole run (the stacker doesn't
+  separate prompt versions).
+- 25 tickers on the same days are strongly correlated: a few weeks of replay
+  is far fewer independent samples than its row count. Report it as a
+  backtest, not live accuracy, and keep always-up as the bar.
+- Quota: each forecast costs one Gemini call per persona per mode, plus one
+  for headline sentiment. 25 tickers x 2 horizons x 13 personas is ~700 calls
+  per replayed day.
+
 ## Purpose
 
 Improve accuracy by learning from outcomes instead of hand-set rules.
