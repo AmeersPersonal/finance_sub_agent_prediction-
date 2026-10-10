@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -234,16 +234,18 @@ def fetch_closes(tickers: Iterable[str], since: date) -> dict[str, pd.Series]:
 
     closes = {}
     for ticker in sorted(set(tickers)):
-        history = yf.Ticker(ticker).history(start=since.isoformat(), auto_adjust=False, actions=True)
+        handle = yf.Ticker(ticker)
+        history = handle.history(start=since.isoformat(), auto_adjust=False, actions=True)
         if history.empty:
             log.warning("no closes for %s; its predictions stay pending", ticker)
             continue
         series = pd.Series(
             history["Close"].to_numpy(), index=[ts.date() for ts in history.index]
         )
-        metadata = yf.Ticker(ticker).get_history_metadata()
+        metadata = handle.get_history_metadata()
         # Only supported US equity venues share the XNYS session calendar here.
-        exchange = metadata.get("exchangeName") if isinstance(metadata, dict) else None
+        # yfinance returns a HistoryMetadata Mapping, not a dict.
+        exchange = metadata.get("exchangeName") if isinstance(metadata, Mapping) else None
         series.attrs.update(
             price_basis="yahoo_split_adjusted_close",
             actions_verified="Stock Splits" in history.columns,

@@ -151,3 +151,31 @@ def test_exchange_holidays_are_not_counted_as_sessions():
 def test_scoring_requires_an_exchange_session_and_aware_clock():
     assert resolve(make_prediction(data_as_of="2026-10-10"), closes(103.0), at("2026-10-20", 12)) is None
     assert resolve(make_prediction(), closes(103.0), datetime(2026, 10, 20, 12)) is None
+
+
+def test_fetch_closes_reads_exchange_from_mapping_metadata(monkeypatch):
+    """yfinance returns a HistoryMetadata Mapping, not a dict; it must still set the calendar."""
+    import sys
+    import types
+    from collections.abc import Mapping
+
+    from ai.evaluation import fetch_closes
+
+    class Metadata(Mapping):
+        def __init__(self, data): self._data = data
+        def __getitem__(self, key): return self._data[key]
+        def __iter__(self): return iter(self._data)
+        def __len__(self): return len(self._data)
+
+    index = pd.DatetimeIndex(pd.bdate_range("2026-10-05", "2026-10-09"), tz=MARKET_TZ)
+    history = pd.DataFrame({"Close": [100.0] * 5, "Stock Splits": [0.0] * 5}, index=index)
+
+    class FakeTicker:
+        def __init__(self, symbol): pass
+        def history(self, **_): return history
+        def get_history_metadata(self): return Metadata({"exchangeName": "NMS"})
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=FakeTicker))
+    series = fetch_closes(["TEST"], date(2026, 10, 5))["TEST"]
+    assert series.attrs["calendar"] == "XNYS"
+    assert series.attrs["actions_verified"] is True
