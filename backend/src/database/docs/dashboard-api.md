@@ -36,9 +36,14 @@ systemctl --user restart hack-knight-api.service
 5. Read `/predictions?ticker=NVDA` or `/predictions/{id}` to retrieve it. The
    result includes persona rationales, the regression benchmark, source links,
    learning explanations, and missing-data warnings.
+   Optional request fields: `modes` (run every persona under several
+   models/temperatures), `live` (websocket price), `audit` (risk checklist and
+   news digest) and `strategy_weights` (or `"auto"`).
 6. `POST /predictions/{id}/evaluate` checks real outcomes. Before the horizon
-   ends, the forecast remains pending. Read `/predictions/{id}/evaluation` for
-   saved evaluations.
+   ends, the forecast remains pending and the response says why in plain words
+   (for example which holiday the horizon skips). Read
+   `/predictions/{id}/evaluation` for saved evaluations, and `GET /score` for
+   accuracy across all saved forecasts.
 
 News ingestion collects Yahoo feed excerpts, Google News headlines and Hacker
 News threads (top comments on stories naming the company). Full
@@ -53,5 +58,7 @@ Gemini, and preserve the evidence. Source IDs actually cited by personas are
 recorded separately from passages merely supplied. Forecast strength is not a
 probability of success.
 
-Keep the API bound to localhost for this demo. Authentication and frontend
-integration are separate work; no real trades are executed.
+Keep the API bound to localhost for this demo. Google sign-in routes live under
+`/oauth/` but forecasts don't require them yet; no real trades are executed.
+The full route list and the notes for the frontend team are in
+[`api/spec.md`](../../api/spec.md).

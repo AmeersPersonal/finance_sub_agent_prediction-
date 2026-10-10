@@ -21,6 +21,7 @@ import logging
 import math
 import sys
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -326,10 +327,15 @@ def run_backtests(args: argparse.Namespace) -> int:
     return failures
 
 
-def resolve_weights(args: argparse.Namespace, report: Report | None) -> dict[str, float] | None:
-    """`args.weight_map`, or with --weights auto the weights `report` suggests."""
+def resolve_weights(
+    args: argparse.Namespace, report: Report | None
+) -> dict[str, float] | Literal["auto"] | None:
+    """`args.weight_map`, or with --weights auto the weights `report` suggests
+    ("auto" itself with --database, where the service reads saved evaluations)."""
     if args.weights != "auto":
         return args.weight_map
+    if args.database and not args.no_log:
+        return "auto"  # predict_and_store derives them from saved evaluations
     report = report or score_log(args.log_file)
     if not report.strategy_weights:
         print("--weights auto: no scored predictions yet, using equal weights", file=sys.stderr)
@@ -340,7 +346,9 @@ def resolve_weights(args: argparse.Namespace, report: Report | None) -> dict[str
 
 
 async def _predict_all(
-    args: argparse.Namespace, weights: dict[str, float] | None, llm: JsonLLM | None = None
+    args: argparse.Namespace,
+    weights: dict[str, float] | Literal["auto"] | None,
+    llm: JsonLLM | None = None,
 ) -> int:
     try:
         llm = llm or GeminiLLM()
@@ -360,6 +368,10 @@ async def _predict_all(
                     strategies=[Strategy(s) for s in args.strategy] if args.strategy else None,
                     age_bands=args.age,
                     llm=llm,
+                    strategy_weights=weights,
+                    modes=args.mode_list,
+                    live=args.live,
+                    audit=args.audit,
                 )
             else:
                 snapshot = await asyncio.to_thread(fetch_snapshot, ticker)
@@ -404,7 +416,12 @@ def main(argv: list[str] | None = None) -> None:
                 connection.execute("SELECT id FROM prediction_runs LIMIT 0")
         report = None
         if args.score:
-            report = score_database() if args.database else score_log(args.log_file)
+            if args.database:
+                from database.service import score_database
+
+                report = score_database()
+            else:
+                report = score_log(args.log_file)
             print(render_report(report))
         if args.tickers and args.backtest:
             failures += run_backtests(args)
@@ -415,26 +432,6 @@ def main(argv: list[str] | None = None) -> None:
         failures += 1
     if failures:
         sys.exit(1)
-
-
-def score_database() -> Report:
-    from datetime import date, datetime
-
-    from ai.evaluation import MARKET_TZ, fetch_closes, score
-    from database.connection import connect
-    from database.repository import DatabaseRepository
-
-    with connect() as connection:
-        predictions = DatabaseRepository(connection).load_predictions()
-    now = datetime.now(MARKET_TZ)
-    closes = fetch_closes(
-        (p.ticker for p in predictions),
-        min(date.fromisoformat(p.data_as_of) for p in predictions),
-    ) if predictions else {}
-    report = score(predictions, closes, now)
-    with connect() as connection:
-        DatabaseRepository(connection).save_evaluations(report)
-    return report
 
 
 if __name__ == "__main__":

@@ -11,12 +11,15 @@ from typing import Any
 import pandas as pd
 
 from ai.agents import DOC_QUERIES
-from ai.evaluation import MARKET_TZ, fetch_closes, score
+from ai.evaluation import MARKET_TZ, Report, derive_strategy_weights, fetch_closes, score
+from ai.live import YahooLiveFeed
 from ai.main import predict
 from ai.llm import GeminiLLM
+from ai.modes import ReasoningMode
 from ai.personas import Strategy, build_personas
 from ai.rag_retrieval import Snippet
 from ai.tool import MarketSnapshot, fetch_snapshot
+from audit.analysis import audit_prediction
 from audit.media import source_digest
 from audit.risk import learning_context
 from database.connection import connect
@@ -176,14 +179,34 @@ def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
     return passages
 
 
+PERSONA_TIMEOUT_SECONDS = 150  # per reasoning mode: each mode is another full panel of calls
+
+
+def _auto_weights() -> dict[str, float] | None:
+    with connect() as connection:
+        votes = DatabaseRepository(connection).persona_votes_by_strategy()
+    return derive_strategy_weights(votes) or None
+
+
 async def predict_and_store(ticker: str, horizon_days: int = 5,
                             strategies: list[Strategy] | None = None,
-                            age_bands: list[str] | None = None, *, llm=None):
+                            age_bands: list[str] | None = None, *, llm=None,
+                            strategy_weights: dict[str, float] | str | None = None,
+                            modes: list[ReasoningMode] | None = None,
+                            live: bool = False, audit: bool = False):
+    """Fetch, store, retrieve evidence, forecast and save atomically.
+
+    `strategy_weights="auto"` derives weights from the saved persona evaluations
+    (no price downloads); `live` takes the last price from Yahoo's websocket;
+    `audit` adds the company overview, checks, risk flags and news digest.
+    """
     ticker = normalize_ticker(ticker)
     if not 1 <= horizon_days <= 252:
         raise ValueError("Horizon must be between 1 and 252 trading days.")
     personas = build_personas(strategies, age_bands)
     await asyncio.to_thread(_check_database)
+    if strategy_weights == "auto":
+        strategy_weights = await asyncio.to_thread(_auto_weights)
     snapshot, ingest = await _prepare(ticker)
     cutoff = datetime.now(timezone.utc)
     regression_daily = await asyncio.to_thread(_model_prices, ticker, snapshot, cutoff)
@@ -199,10 +222,14 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
     owns_llm = llm is None
     llm = llm or GeminiLLM()
     try:
-        async with asyncio.timeout(150):
+        async with asyncio.timeout(PERSONA_TIMEOUT_SECONDS * max(1, len(modes or ()))):
             prediction = await predict(ticker, horizon_days=horizon_days, strategies=strategies,
                                        age_bands=age_bands, snapshot=snapshot, llm=llm,
+                                       strategy_weights=strategy_weights, modes=modes,
+                                       live_feed=YahooLiveFeed() if live else None,
                                        documents_by_strategy=snippets, regression_daily=regression_daily)
+            if audit:
+                prediction.audit = await audit_prediction(prediction, snapshot, llm)
     finally:
         if owns_llm:
             await llm.aclose()
@@ -261,6 +288,20 @@ def _save_with_evidence(prediction, passages, cutoff):
                                 if p.strategy == strategy.value and p.view and citation_id in p.view.source_ids]
                     repo.save_evidence(prediction.id, passage, retrieved_at=cutoff,
                                        strategy=strategy.value, cited_by=cited_by)
+
+
+def score_database() -> Report:
+    """Score every saved forecast that can be, and append the outcomes (idempotent)."""
+    with connect() as connection:
+        predictions = DatabaseRepository(connection).load_predictions()
+    closes = fetch_closes(
+        (p.ticker for p in predictions),
+        min(date.fromisoformat(p.data_as_of) for p in predictions),
+    ) if predictions else {}
+    report = score(predictions, closes, datetime.now(MARKET_TZ))
+    with connect() as connection:
+        DatabaseRepository(connection).save_evaluations(report)
+    return report
 
 
 async def evaluate_prediction(prediction_id: str) -> dict:

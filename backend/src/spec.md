@@ -14,21 +14,19 @@
 ## Purpose
 
 Application source root. `main.py` is the CLI and `api/` the HTTP API; both run
-the same pipeline. Everything else is a package.
+the same pipeline (the API always through `database.service`). Everything else is a package.
 
 ## Layout
 
 | Path | Role |
 |---|---|
 | `main.py` | CLI: predict + log, `--score`, `--backtest`; `--weights`, `--live`, `--audit` |
-| `api/` | FastAPI app: `/predict`, `/score`, `/health`, plus `oauth/` routes (`api/spec.md`) |
+| `api/` | The one FastAPI app (`api.main`): database-backed forecasts and dashboard reads, `/score`, plus `oauth/` routes (`api/spec.md`) |
 | `ai/` | LLM pipeline: fetch, sentiment, personas, aggregation, evaluation, live quotes (`ai/spec.md`) |
-| `audit/` | Explains a prediction: company overview, data checks, risk checklist, news digest (`audit/spec.md`) |
+| `audit/` | Explains a prediction: company overview, data checks, risk checklist, news digest; source digest and learning explanations (`audit/spec.md`) |
 | `finance/` | Pure numeric functions, no LLM, no network (`finance/spec.md`) |
 | `ml/` | Learned models (price classifier, persona stacker, calibration) behind walk-forward gates; `python -m ml` (`ml/spec.md`) |
-| `audit/` | Audit checklist and news digest; source digest and learning explanations (`audit/spec.md`) |
 | `sources/` | Online evidence: Yahoo/Google News RSS, Hacker News, optional SEC filings and press releases (`sources/spec.md`) |
-| `api/` | FastAPI routes (`api/spec.md`) |
 | `oauth/` | Google OIDC sign-in routes and in-memory sessions (`oauth/spec.md`) |
 | `database/` | PostgreSQL migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
 | `tests/` | Offline test suite (`tests/spec.md`) |

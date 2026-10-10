@@ -56,7 +56,7 @@ backend/
     ├── requirements.txt      # direct dependencies, pinned
     ├── requirements.lock     # every dependency, pinned with hashes (pip-compile)
     ├── api/
-    │   └── app.py            # FastAPI: POST /predict, GET /score, GET /health, OAuth routes
+    │   └── main.py           # the one FastAPI app: database-backed forecasts and reads, /score, OAuth
     ├── ai/
     │   ├── main.py           # predict(): fetch -> live quote? -> sentiment -> personas -> aggregate
     │   ├── tool.py           # parallel fetching -> MarketSnapshot; clean_daily repairs Yahoo's last bar
@@ -75,11 +75,11 @@ backend/
     │   ├── test.py           # empty; to be deleted
     │   └── docs/             # private documents, contents gitignored
     │       └── age_profiles/<band>.md   # optional sourced profile, overrides personas.py text
-    ├── audit/                # explains a prediction (--audit): no new math, one LLM call
-    │   ├── analysis.py       # audit_prediction(): the entry point
+    ├── audit/                # explains a prediction: no new math
+    │   ├── analysis.py       # audit_prediction() (--audit): the entry point, one LLM call
     │   ├── info.py           # company overview, data checks
-    │   ├── risk.py           # decision risk checklist composed from finance/ measures
-    │   └── media.py          # news TL;DRs; links come from the feed, never the model
+    │   ├── risk.py           # decision risk checklist; learning_context for the dashboard
+    │   └── media.py          # news TL;DRs (links from the feed, never the model); source_digest
     ├── finance/
     │   ├── indicators.py     # RSI, MACD, ATR, VWAP, volume profile, beta, options, flat band
     │   ├── linear_regression.py  # OLS on price features, walk-forward validated: the baseline
@@ -96,9 +96,7 @@ backend/
     │   ├── walkforward.py    # purged expanding-window evaluation, baselines, metrics, gates
     │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
     │   └── store.py          # save/load under data/models/ with a sidecar JSON
-    ├── api/                  # localhost FastAPI routes (database-backed) + OAuth router
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
-    ├── audit/                # audit checklist and news digest; source digest and learning explanations
     ├── database/             # migrations, repository, orchestration, setup/docs
     ├── oauth/                # Google OIDC sign-in (code + PKCE), in-memory sessions
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
@@ -132,7 +130,7 @@ python main.py SPY --backtest [--features a,b,c]      # regression walk-forward 
 python -m ml price [--target relative]                # model A walk-forward + gate (ml/spec.md)
 python -m ml stacker                                  # model B; needs ~300 scored predictions
 python -m ml coverage                                 # accuracy at coverage, strength calibration
-uvicorn api.app:app --reload                          # HTTP API, docs at /docs
+uvicorn api.main:app --reload                         # HTTP API (database-backed), docs at /docs
 pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage
 ```

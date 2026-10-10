@@ -22,17 +22,17 @@ database. API tests use an in-process client with mocked services.
 |---|---|
 | `conftest.py` | `snapshot` fixture (synthetic `MarketSnapshot` with quarterly statements and news), `fake_llm` / `failing_llm` (personas, sentiment, news digest), sample statements and Street data |
 | `test_pipeline.py` | `predict()` end to end with the fake LLM, including multi-mode runs; packets; prompt changelog |
-| `test_api.py`, `test_service.py`, `test_sources.py` | Dashboard validation/error handling, ingestion/evidence orchestration, and mocked online providers |
+| `test_service.py`, `test_sources.py` | Ingestion/evidence orchestration and forecast options in `predict_and_store`; mocked online providers |
 | `test_model_data.py` | Stored-row conversion, timezone/session checks, and rejection of missing/invalid values |
 | `test_database.py` | Credential-safe configuration, frozen input packets, and opt-in local PostgreSQL persistence/constraints |
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
-| `test_evaluation.py` | baselines, log, scorer, stock splits, derived strategy weights |
+| `test_evaluation.py` | baselines, log, scorer (NYSE calendar, splits, pending reasons), derived strategy weights |
 | `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
 | `test_ml.py` | `ml/`: labels match the scorer, no future data in features or training, metrics, the three models (MLP on CPU), store round trip, model B and `--weights auto` replay, coverage and calibration, `python -m ml` with fetches stubbed |
 | `test_llm.py` | `GeminiLLM` retries, backoff and give-up, against a fake genai client |
 | `test_live.py` | websocket live quote: first tick, timeout, dropped connection, fallback |
 | `test_cli.py` | `main.py`: argument errors, `--weights`, `--backtest`, rendering, predict + log |
-| `test_api.py` | HTTP API with dependency overrides: `/predict`, validation, errors, `/score` |
+| `test_api.py` | The HTTP API with a faked service and LLM: routes, validation, option pass-through, error statuses, `/score`, OAuth mount, CORS |
 | `test_oauth.py` | OAuth routes with a fake provider: state/CSRF, PKCE, replay, expiry, sessions |
 | `test_audit.py` | company overview, data checks, risk checklist, news digest |
 | `test_sentiment.py`, `test_feeds.py`, `test_rag_retrieval.py`, `test_tool.py` | ai helpers, news items, cache pruning, `clean_daily` |

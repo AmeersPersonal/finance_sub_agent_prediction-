@@ -432,6 +432,23 @@ class DatabaseRepository:
                 (ticker.strip().upper(), limit),
             ).fetchall()
 
+    def persona_votes_by_strategy(self) -> dict[str, list[bool]]:
+        """Each scored persona row's latest evaluation, grouped by strategy (for auto weights)."""
+        with self._transaction():
+            rows = self.connection.execute(
+                """SELECT o.strategy, latest.correct FROM prediction_outputs o
+                CROSS JOIN LATERAL (
+                    SELECT e.correct FROM evaluations e WHERE e.output_id = o.id
+                    ORDER BY e.evaluated_at DESC, e.id DESC LIMIT 1
+                ) latest
+                WHERE o.output_type = 'persona' AND latest.correct IS NOT NULL
+                ORDER BY o.id"""
+            ).fetchall()
+        votes: dict[str, list[bool]] = {}
+        for row in rows:
+            votes.setdefault(row["strategy"], []).append(row["correct"])
+        return votes
+
     def get_evaluations(self, prediction_id: str) -> list[dict]:
         with self._transaction():
             return self.connection.execute(

@@ -19,7 +19,7 @@ from sources import DocumentCollection, SourceDocument
 def repository(monkeypatch):
     state = SimpleNamespace(events=[], bars=[], fundamentals=[], documents=[], chunks=[],
                             passages=[], retrievals=[], predictions=[], evidence=[], loaded=None,
-                            datasets={})
+                            datasets={}, votes={})
     class Repo:
         def __init__(self, connection): pass
         def save_price_bars(self, ticker, bars, **kwargs):
@@ -48,6 +48,7 @@ def repository(monkeypatch):
         def get_prediction(self, prediction_id): return state.loaded
         def save_evaluations(self, report): state.events.append('evaluation_saved')
         def get_evaluations(self, prediction_id): return []
+        def persona_votes_by_strategy(self): return state.votes
     class Connection:
         """Enough of psycopg for the health check and the real DatasetStore."""
         def execute(self, sql, params=()):
@@ -249,3 +250,38 @@ def test_pending_evaluation_has_no_invented_outcome(monkeypatch, repository):
         'prediction_id': 'pending', 'pending': True, 'scored': 0, 'evaluations': [],
         'pending_reason': 'horizon_open', 'pending_detail': 'The horizon ends on 2026-10-16.',
         'retry_after': retry.isoformat()}
+
+
+def test_forecast_options_reach_predict_and_are_saved(monkeypatch, repository, offline_sources, fake_llm):
+    from ai.modes import resolve_modes
+
+    class Feed:
+        name = 'fake-websocket'
+        async def first_tick(self, ticker, timeout):
+            return {'price': 150.0}
+
+    monkeypatch.setattr(service, 'YahooLiveFeed', Feed)
+    p = asyncio.run(service.predict_and_store(
+        'TEST', strategies=[Strategy.DAY_TRADER], age_bands=['18-24'], llm=fake_llm,
+        strategy_weights={'day_trader': 2.0}, modes=resolve_modes('temps'), live=True, audit=True))
+    assert p.modes == ['t0.2', 't0.7', 't1.0'] and len(p.personas) == 3
+    assert p.quote_source == 'fake-websocket' and p.last_price == 150.0
+    assert p.audit is not None and p.audit['risk']['level'] in ('low', 'medium', 'high')
+    assert repository.predictions == [p]  # the audit is saved with the forecast
+
+
+def test_auto_weights_come_from_saved_evaluations(monkeypatch, repository, offline_sources, fake_llm):
+    captured = {}
+    original = service.predict
+    async def spy(*args, **kwargs):
+        captured['weights'] = kwargs['strategy_weights']
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(service, 'predict', spy)
+    repository.votes = {'long_term': [True] * 80 + [False] * 20, 'day_trader': [True] * 20 + [False] * 80}
+    asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.DAY_TRADER], age_bands=['18-24'],
+                                          llm=fake_llm, strategy_weights='auto'))
+    assert captured['weights']['long_term'] > 1 > captured['weights']['day_trader']
+    repository.votes = {}  # nothing scored yet: equal weights
+    asyncio.run(service.predict_and_store('TEST', strategies=[Strategy.DAY_TRADER], age_bands=['18-24'],
+                                          llm=fake_llm, strategy_weights='auto'))
+    assert captured['weights'] is None
