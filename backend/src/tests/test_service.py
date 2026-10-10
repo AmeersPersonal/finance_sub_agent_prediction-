@@ -117,12 +117,13 @@ def test_evidence_reaches_prompt_and_tracks_supplied_vs_cited(
                     content_kind='feed_excerpt', published_at=at, first_seen_at=at)
     repository.passages = [passage(11, document.content_text), passage(12, 'Additional risk evidence.')]
     original = fake_llm.generate_json
-    async def citing_llm(system, prompt, schema):
+    # Same signature as JsonLLM.generate_json, so a misspelled option still fails loudly.
+    async def citing_llm(system, prompt, schema, *, temperature=None, model=None):
         if schema is PersonaView:
             fake_llm.calls.append((system, prompt))
             return PersonaView(direction='up', conviction=.6, rationale='Evidence supports growth',
                                key_factors=[], source_ids=['doc-1-chunk-11', 'invented-id', 'doc-1-chunk-11'])
-        return await original(system, prompt, schema)
+        return await original(system, prompt, schema, temperature=temperature, model=model)
     fake_llm.generate_json = citing_llm
     p = asyncio.run(service.predict_and_store(' test ', strategies=[Strategy.LONG_TERM],
                                              age_bands=['18-24'], llm=fake_llm))

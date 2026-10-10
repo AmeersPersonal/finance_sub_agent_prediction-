@@ -44,9 +44,12 @@ def make_llm(monkeypatch):
 
     def build(script, **kwargs):
         models = FakeModels(script)
-        monkeypatch.setattr(
-            llm_module.genai, "Client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models))
-        )
+
+        def client(*, http_options):
+            models.http_options = http_options
+            return SimpleNamespace(aio=SimpleNamespace(models=models))
+
+        monkeypatch.setattr(llm_module.genai, "Client", client)
         return GeminiLLM(**kwargs), models, sleeps
 
     return build
@@ -95,6 +98,11 @@ def test_per_call_model_and_temperature(make_llm, monkeypatch):
         {"model": "env-model", "temperature": None},
         {"model": "other-model", "temperature": 0.2},
     ]
+
+
+def test_requests_time_out(make_llm):
+    _, models, _ = make_llm([GOOD])
+    assert models.http_options.timeout == 30_000  # milliseconds; a hung call can't stall a forecast
 
 
 def test_missing_key_is_a_clear_error(monkeypatch):

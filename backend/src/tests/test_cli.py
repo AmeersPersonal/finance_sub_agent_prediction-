@@ -92,7 +92,9 @@ def test_render_marks_failures_live_quotes_and_unclear_calls(snapshot, failing_l
     prediction = prediction.model_copy(update={"direction": "unclear", "quote_source": "yahoo-websocket"})
     text = main.render(prediction)
     assert "UNCLEAR" in text and "live quote via yahoo-websocket" in text
-    assert text.count("FAILED  RuntimeError: simulated API failure") == 3
+    # Stored errors name the exception type only; provider messages stay out of saved results.
+    assert text.count("FAILED  RuntimeError: persona generation failed") == 3
+    assert "simulated API failure" not in text
 
 
 def test_render_includes_the_audit(snapshot, fake_llm):
