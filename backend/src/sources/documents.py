@@ -1,7 +1,7 @@
-"""Collect feed evidence and optional official SEC text.
+"""Collect feed evidence, Hacker News discussion and optional official SEC text.
 
 Every document carries a role: company_info (the company's own filings and press
-releases), public_opinion (news coverage) or product_event
+releases), public_opinion (news coverage and forum posts) or product_event
 (launches, announcements and rumors). Retrieval mixes the roles per strategy.
 
 Publisher links are retained as citations, never followed to scrape articles.
@@ -9,6 +9,8 @@ Feed summaries are explicitly excerpts, not full articles or public-opinion poll
 Google News RSS gives headlines only; its feed terms allow personal,
 non-commercial reading, which fits this learning prototype and nothing more.
 SEC downloading is opt-in through SEC_USER_AGENT (application + contact email).
+Hacker News discussion comes from the keyless Algolia HN Search API (stories)
+and the official HN Firebase API (top-level comments in HN's ranking order).
 All fetched URLs and redirects stay on a fixed HTTPS provider allowlist.
 """
 
@@ -22,17 +24,20 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
 
 YAHOO_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
+HN_SEARCH = "https://hn.algolia.com/api/v1/search?{params}"
+HN_ITEM = "https://hacker-news.firebaseio.com/v0/item/{id}.json"
 ALLOWED_HOSTS = frozenset({
     "feeds.finance.yahoo.com", "news.google.com", "www.sec.gov", "data.sec.gov", "sec.gov",
+    "hn.algolia.com", "hacker-news.firebaseio.com",
 })
 PRODUCT_TERMS = re.compile(
     r"\b(launch\w*|announc\w*|unveil\w*|introduc\w*|product\w*|rumou?r\w*|leak\w*)\b", re.I)
@@ -420,6 +425,82 @@ def fetch_sec_filings(ticker: str, company_name: str, user_agent: str,
     return result
 
 
+def fetch_hacker_news(ticker: str, company_name: str = "", story_limit: int = 3,
+                      comments_per_story: int = 4,
+                      seen_at: datetime | None = None) -> DocumentCollection:
+    """Well-voted Hacker News stories from the past 30 days naming the company, with top comments.
+
+    One document per story. Hacker News skews heavily to tech, so most non-tech
+    tickers return nothing. Comment authors are not stored.
+    """
+    result = DocumentCollection()
+    seen_at = seen_at or datetime.now(timezone.utc)
+    company = company_query_name(company_name)
+    since = int((seen_at - timedelta(days=30)).timestamp())
+    try:
+        stories = json.loads(_get(HN_SEARCH.format(params=urlencode({
+            "query": company or ticker, "tags": "story",
+            "numericFilters": f"created_at_i>{since},points>=20", "hitsPerPage": "10",
+        })))).get("hits", [])
+    except Exception as exc:
+        result.warnings.append(f"Hacker News evidence unavailable ({type(exc).__name__})")
+        return result
+    # Search matches story text and URLs too; require the stock in the title.
+    mention = re.compile(r"(?<![\w$])\$?" + re.escape(ticker) + r"\b"
+                         + (r"|\b" + re.escape(company) + r"\b" if company else ""), re.I)
+    for story in stories:
+        story_id = str(story.get("objectID", ""))
+        title = (story.get("title") or "").strip()
+        try:
+            published = datetime.fromtimestamp(int(story["created_at_i"]), timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            published = None
+        if (not story_id.isdigit() or not title or not mention.search(title)
+                or (published is not None and published > seen_at)):
+            continue
+        comments = []
+        try:
+            # `kids` lists top-level replies in HN's ranking order; nested replies
+            # mostly argue with each other, so they are skipped.
+            kids = json.loads(_get(HN_ITEM.format(id=story_id)) or b"{}").get("kids") or []
+            for kid in kids[: comments_per_story * 2]:
+                if len(comments) >= comments_per_story:
+                    break
+                if not str(kid).isdigit():
+                    continue
+                item = json.loads(_get(HN_ITEM.format(id=kid)) or b"{}") or {}
+                if item.get("type") != "comment" or item.get("deleted") or item.get("dead"):
+                    continue
+                text = text_from_html(item.get("text") or "").replace("\n", " ")
+                if text:
+                    comments.append(text if len(text) <= 400 else text[:400].rstrip() + "...")
+        except Exception as exc:
+            result.warnings.append(f"Hacker News comments unavailable ({type(exc).__name__})")
+        body = text_from_html(story.get("story_text") or "")
+        parts = [title] + ([body[:1000]] if body else [])
+        if comments:
+            parts.append("Top-level comments:\n" + "\n".join(f"- {c}" for c in comments))
+        text = "\n".join(parts)
+        result.documents.append(SourceDocument(
+            source_url=f"https://news.ycombinator.com/item?id={story_id}", title=title,
+            content_text=text, document_type="forum",
+            content_kind="excerpt" if body or comments else "headline",
+            source_name="Hacker News", published_at=published, first_seen_at=seen_at,
+            classification={"role": "public_opinion", "method": "source_type",
+                            "unconfirmed": bool(UNCONFIRMED_TERMS.search(text))},
+            metadata={"ticker": ticker.upper(), "provider": "hn_algolia",
+                      "points": story.get("points"), "num_comments": story.get("num_comments"),
+                      "comments_included": len(comments),
+                      "linked_url": story.get("url") if _citation_url(story.get("url") or "") else None,
+                      "publication_time_known": published is not None,
+                      "coverage": "Tech-community discussion: the top few top-level comments of one thread; "
+                                  "skews to tech topics, not a representative opinion sample"},
+        ))
+        if len(result.documents) >= story_limit:
+            break
+    return result
+
+
 def _dedupe(documents: list[SourceDocument]) -> list[SourceDocument]:
     """One copy per link and per news headline (Yahoo and Google often carry the same story)."""
     links, headlines, kept = set(), set(), []
@@ -451,9 +532,9 @@ def fetch_documents(ticker: str, company_name: str = "") -> DocumentCollection:
             result.warnings.append("Yahoo feed returned no source-linked evidence")
     except Exception as exc:
         result.warnings.append(f"Yahoo news evidence unavailable ({type(exc).__name__})")
-    google = fetch_google_news(ticker, company_name)
-    result.documents.extend(google.documents)
-    result.warnings.extend(google.warnings)
+    for extra in (fetch_google_news(ticker, company_name), fetch_hacker_news(ticker, company_name)):
+        result.documents.extend(extra.documents)
+        result.warnings.extend(extra.warnings)
     user_agent = os.environ.get("SEC_USER_AGENT", "").strip()
     if user_agent:
         filings = fetch_sec_filings(ticker, company_name, user_agent)

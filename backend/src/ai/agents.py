@@ -38,7 +38,7 @@ from finance.risk_management import altman_z
 log = logging.getLogger(__name__)
 
 # Bump when prompts or packets change, so logged predictions stay comparable.
-PROMPT_VERSION = "5"
+PROMPT_VERSION = "6"
 
 ROLE_LABELS = {
     "company_info": "company info (the company's own filing or press release)",

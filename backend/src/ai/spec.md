@@ -46,6 +46,7 @@ scoring the results later.
 ## Prompt history
 
 - Version 3: strategy-specific numeric packets and volatility-sized direction question.
+- Version 6: Hacker News threads (story plus top-ranked comments) added as public-opinion evidence, changing packets.
 - Version 5: each passage shows its role (company info, public opinion, product event) and an "unconfirmed" mark for rumor/leak wording; the system prompt explains the labels. Retrieval now gives every strategy a mix of the three roles, so packets change too.
 - Version 4: supplied online passages with coverage labels, source IDs, and untrusted-evidence handling. Invalid citation IDs are discarded. Database-backed forecasts retrieve sources through `database.service`; direct `predict()` retains injectable documents and the local retrieval fallback.
 

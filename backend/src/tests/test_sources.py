@@ -103,14 +103,16 @@ def test_fetch_news_does_not_follow_publisher_links(monkeypatch):
 
     def fake_get(url, user_agent=""):
         calls.append(url)
-        return RSS
+        return b'{"hits": []}' if "hn.algolia.com" in url else RSS
 
     monkeypatch.setattr(sources, "_get", fake_get)
     result = sources.fetch_documents("NVDA")
-    # Yahoo, then Google News for news and for product/rumor coverage; no publisher pages.
-    assert len(calls) == 3
+    # Yahoo, Google News for news and for product/rumor coverage, then Hacker News
+    # story search; no publisher pages.
+    assert len(calls) == 4
     assert "feeds.finance.yahoo.com" in calls[0]
-    assert all("news.google.com/rss/search" in url for url in calls[1:])
+    assert all("news.google.com/rss/search" in url for url in calls[1:3])
+    assert calls[3].startswith("https://hn.algolia.com/api/v1/search?")
     assert result.documents
     # The same story from several feeds is kept once.
     assert len({d.source_url for d in result.documents}) == len(result.documents)
@@ -306,3 +308,85 @@ def test_sec_fetches_8k_press_releases_with_roles(monkeypatch):
     assert earnings.source_url.endswith("/000000123426000009/ex991.htm")
     assert product.classification["role"] == "product_event"
     assert "unveils" in product.content_text
+
+
+def test_forum_hosts_other_than_hacker_news_are_not_allowlisted():
+    sources.validate_fetch_url("https://news.google.com/rss/search?q=x")
+    sources.validate_fetch_url("https://hn.algolia.com/api/v1/search?query=x")
+    for url in ("https://www.reddit.com/r/stocks.json", "https://oauth.reddit.com/r/stocks/search?q=x"):
+        with pytest.raises(ValueError):
+            sources.validate_fetch_url(url)
+
+
+HN_STORIES = {"hits": [
+    {"objectID": "101", "title": "Example Chips ships new GPU", "points": 300, "num_comments": 80,
+     "created_at_i": 1791500000, "url": "https://publisher.example/gpu", "author": "poster"},
+    {"objectID": "102", "title": "Unrelated story that only links to examplechips.com", "points": 50,
+     "created_at_i": 1791500000},
+    {"objectID": "103", "title": "Ask HN: Is $NVDA overvalued?", "story_text": "<p>Thoughts?</p>",
+     "points": 40, "num_comments": 0, "created_at_i": 1791500000},
+    {"objectID": "104", "title": "Example Chips from the future", "created_at_i": 1891900000},
+    {"objectID": "../x", "title": "Example Chips bad id", "created_at_i": 1791500000},
+]}
+HN_ITEMS = {
+    "101": {"type": "story", "kids": [201, 202, 203, 204]},
+    "201": {"type": "comment", "parent": 101, "text": "Rumor says yields are poor.<p>Second paragraph", "by": "alice"},
+    "202": {"type": "comment", "deleted": True},
+    "203": {"type": "comment", "dead": True, "text": "flagged"},
+    "204": {"type": "comment", "text": "x" * 500},
+    "103": {"type": "story"},
+}
+
+
+def _hn_get(calls):
+    def fake_get(url, user_agent=""):
+        calls.append(url)
+        if url.startswith("https://hn.algolia.com/"):
+            return json.dumps(HN_STORIES).encode()
+        item = url.rsplit("/", 1)[-1].removesuffix(".json")
+        return json.dumps(HN_ITEMS.get(item)).encode()
+    return fake_get
+
+
+def test_hacker_news_stories_carry_ranked_top_level_comments(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sources, "_get", _hn_get(calls))
+    result = sources.fetch_hacker_news("NVDA", "Example Chips Corp", seen_at=NOW)
+    assert result.warnings == []
+    assert "query=Example+Chips" in calls[0] and "points%3E%3D20" in calls[0]
+    # Only titles naming the company or ticker, from the past, with numeric ids.
+    assert [d.source_url for d in result.documents] == [
+        "https://news.ycombinator.com/item?id=101", "https://news.ycombinator.com/item?id=103"]
+    story, ask = result.documents
+    assert story.content_text.splitlines()[:3] == [
+        "Example Chips ships new GPU", "Top-level comments:", "- Rumor says yields are poor. Second paragraph"]
+    assert story.content_text.endswith("x" * 400 + "...")  # long comments are trimmed
+    assert story.metadata["comments_included"] == 2  # deleted and dead comments skipped
+    assert story.metadata["linked_url"] == "https://publisher.example/gpu"
+    assert story.classification == {"role": "public_opinion", "method": "source_type", "unconfirmed": True}
+    assert story.document_type == "forum" and story.content_kind == "excerpt"
+    assert story.published_at == datetime(2026, 10, 8, 22, 53, 20, tzinfo=timezone.utc)
+    assert "alice" not in story.content_text and "poster" not in json.dumps(story.metadata)
+    assert ask.content_text == "Ask HN: Is $NVDA overvalued?\nThoughts?"
+    # Every request stays on the two HN API hosts.
+    assert all(url.startswith(("https://hn.algolia.com/", "https://hacker-news.firebaseio.com/"))
+               for url in calls)
+
+
+def test_hacker_news_comment_failure_keeps_the_story(monkeypatch):
+    def fake_get(url, user_agent=""):
+        if url.startswith("https://hn.algolia.com/"):
+            return json.dumps(HN_STORIES).encode()
+        raise TimeoutError()
+
+    monkeypatch.setattr(sources, "_get", fake_get)
+    result = sources.fetch_hacker_news("NVDA", "Example Chips", story_limit=1, seen_at=NOW)
+    assert [d.content_kind for d in result.documents] == ["headline"]
+    assert result.warnings == ["Hacker News comments unavailable (TimeoutError)"]
+
+
+def test_hacker_news_search_failure_is_a_warning(monkeypatch):
+    monkeypatch.setattr(sources, "_get", lambda *a, **k: (_ for _ in ()).throw(ValueError()))
+    result = sources.fetch_hacker_news("NVDA")
+    assert result.documents == []
+    assert result.warnings == ["Hacker News evidence unavailable (ValueError)"]
