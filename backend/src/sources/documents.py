@@ -1,7 +1,7 @@
 """Collect feed evidence and optional official SEC text.
 
-Every document carries a role: company_info (the company's own filings),
-public_opinion (news coverage) or product_event
+Every document carries a role: company_info (the company's own filings and press
+releases), public_opinion (news coverage) or product_event
 (launches, announcements and rumors). Retrieval mixes the roles per strategy.
 
 Publisher links are retained as citations, never followed to scrape articles.
@@ -269,9 +269,101 @@ def fetch_google_news(ticker: str, company_name: str = "", limit: int = 8,
     return result
 
 
+class _IndexTableParser(HTMLParser):
+    """Rows of an EDGAR filing index table: cell texts plus the row's links."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: list[tuple[list[str], list[str]]] = []
+        self._cells: list[str] | None = None
+        self._links: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._cells, self._links = [], []
+        elif tag == "td" and self._cells is not None:
+            self._cells.append("")
+        elif tag == "a" and self._cells is not None:
+            href = dict(attrs).get("href")
+            if href:
+                self._links.append(href)
+
+    def handle_endtag(self, tag):
+        if tag == "tr" and self._cells is not None:
+            self.rows.append(([c.strip() for c in self._cells], self._links))
+            self._cells = None
+
+    def handle_data(self, data):
+        if self._cells:
+            self._cells[-1] += data
+
+
+def exhibit_991_url(index_html: str, cik: int, accession: str) -> str | None:
+    """The EX-99.1 document in an 8-K filing index, if it is a plain document in that filing."""
+    parser = _IndexTableParser()
+    parser.feed(index_html)
+    folder = f"/Archives/edgar/data/{cik}/{accession.replace('-', '')}/"
+    for cells, links in parser.rows:
+        if not any(cell.upper() == "EX-99.1" for cell in cells):
+            continue
+        for href in links:
+            href = href.removeprefix("/ix?doc=")
+            name = href.removeprefix(folder)
+            if href.startswith(folder) and re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:htm|html|txt)", name, re.I):
+                return "https://www.sec.gov" + href
+    return None
+
+
+def _press_releases(cik: int, recent: dict, ticker: str, company: str, user_agent: str,
+                    limit: int, result: DocumentCollection) -> None:
+    """Exhibit 99.1 press releases attached to the latest 8-Ks."""
+    found = 0
+    for i, form in enumerate(recent.get("form", [])):
+        if form != "8-K" or found >= limit:
+            continue
+        accession = recent["accessionNumber"][i]
+        if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
+            continue
+        all_items = recent.get("items") or []
+        items = (all_items[i] if i < len(all_items) else "") or ""
+        try:
+            index_url = (f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+                         f"{accession.replace('-', '')}/{accession}-index.htm")
+            url = exhibit_991_url(_get(index_url, user_agent).decode("utf-8", errors="replace"), cik, accession)
+            if url is None:
+                continue  # many 8-Ks carry no press release
+            raw = _get(url, user_agent).decode("utf-8", errors="replace")
+            text = text_from_html(raw) if url.lower().endswith((".htm", ".html")) else raw.strip()
+            if not text:
+                raise ValueError("Document contains no usable text")
+            found += 1
+            accepted = recent.get("acceptanceDateTime", [])
+            published = _parse_date(accepted[i]) if i < len(accepted) else None
+            # Item 2.02 is results of operations: an earnings release is company info.
+            if "2.02" in items:
+                classification = {"role": "company_info", "method": "8k_item", "unconfirmed": False}
+            elif PRODUCT_TERMS.search(text[:1500]):
+                classification = {"role": "product_event", "method": "keyword", "unconfirmed": False}
+            else:
+                classification = {"role": "company_info", "method": "source_type", "unconfirmed": False}
+            result.documents.append(SourceDocument(
+                source_url=url, title=f"{company} press release, 8-K Exhibit 99.1 ({recent['filingDate'][i]})",
+                content_text=text, document_type="announcement", content_kind="full_text",
+                source_name="SEC EDGAR", published_at=published, first_seen_at=datetime.now(timezone.utc),
+                classification=classification,
+                metadata={"ticker": ticker.upper(), "provider": "sec_edgar", "form": "8-K EX-99.1",
+                          "items": items, "accession_number": accession,
+                          "filing_date": recent["filingDate"][i],
+                          "publication_time_known": published is not None,
+                          "coverage": "Company press release furnished with an 8-K; the company's own wording"},
+            ))
+        except Exception as exc:
+            result.warnings.append(f"SEC 8-K press release unavailable ({type(exc).__name__})")
+
+
 def fetch_sec_filings(ticker: str, company_name: str, user_agent: str,
-                      limit: int = 3) -> DocumentCollection:
-    """Latest 10-K, 10-Q and 8-K primary documents; no exhibits or bulk history."""
+                      limit: int = 3, press_release_limit: int = 2) -> DocumentCollection:
+    """Latest 10-K, 10-Q and 8-K primary documents, plus recent 8-K EX-99.1 press releases."""
     result = DocumentCollection()
     if "@" not in user_agent or "\n" in user_agent or "\r" in user_agent:
         result.warnings.append("SEC filings skipped: SEC_USER_AGENT must identify the application and a contact email")
@@ -314,12 +406,15 @@ def fetch_sec_filings(ticker: str, company_name: str, user_agent: str,
                     metadata={"ticker": ticker.upper(), "provider": "sec_edgar", "form": form,
                               "accession_number": accession, "filing_date": recent["filingDate"][i],
                               "publication_time_known": published is not None,
-                              "coverage": "Primary filing text only; linked exhibits are not fetched"},
+                              "coverage": "Primary filing text only; press releases are stored separately"},
                 ))
             except Exception as exc:
                 result.warnings.append(f"SEC {form} text unavailable ({type(exc).__name__})")
             if len(selected) >= limit:
                 break
+        if press_release_limit > 0:
+            company = company_name or entry.get("title") or ticker
+            _press_releases(cik, recent, ticker, company, user_agent, press_release_limit, result)
     except Exception as exc:
         result.warnings.append(f"SEC filings unavailable ({type(exc).__name__})")
     return result

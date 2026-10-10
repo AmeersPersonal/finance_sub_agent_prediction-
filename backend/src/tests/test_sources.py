@@ -243,3 +243,66 @@ def test_google_news_failure_is_a_warning(monkeypatch):
 ])
 def test_company_query_name_drops_legal_suffixes(name, expected):
     assert sources.company_query_name(name) == expected
+
+
+INDEX_HTML = """<table class="tableFile">
+<tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th></tr>
+<tr><td>1</td><td>8-K</td><td><a href="/ix?doc=/Archives/edgar/data/1234/000000123426000009/form8k.htm">form8k.htm</a></td><td>8-K</td></tr>
+<tr><td>2</td><td>PRESS RELEASE</td><td><a href="/Archives/edgar/data/1234/000000123426000009/ex991.htm">ex991.htm</a></td><td>EX-99.1</td></tr>
+</table>"""
+
+
+def test_exhibit_991_is_found_only_inside_its_filing():
+    accession = "0000001234-26-000009"
+    assert sources.exhibit_991_url(INDEX_HTML, 1234, accession) == \
+        "https://www.sec.gov/Archives/edgar/data/1234/000000123426000009/ex991.htm"
+    elsewhere = INDEX_HTML.replace("/1234/000000123426000009/ex991", "/9999/000000999926000001/ex991")
+    assert sources.exhibit_991_url(elsewhere, 1234, accession) is None
+    assert sources.exhibit_991_url(INDEX_HTML.replace("EX-99.1", "EX-10.1"), 1234, accession) is None
+
+
+def test_sec_fetches_8k_press_releases_with_roles(monkeypatch):
+    companies = {"0": {"cik_str": 1234, "ticker": "NVDA", "title": "Example Chips"}}
+    submissions = {"filings": {"recent": {
+        "form": ["8-K", "8-K", "8-K", "8-K"],
+        "accessionNumber": ["0000001234-26-000009", "0000001234-26-000008",
+                            "0000001234-26-000007", "0000001234-26-000006"],
+        "primaryDocument": ["form8k.htm"] * 4,
+        "items": ["2.02,9.01", "5.02", "8.01,9.01", "7.01"],
+        "filingDate": ["2026-10-08", "2026-09-20", "2026-09-01", "2026-08-01"],
+        "acceptanceDateTime": ["2026-10-08T20:00:00Z"] * 4,
+    }}}
+    calls = []
+
+    def fake_get(url, user_agent=""):
+        calls.append(url)
+        if url == sources.SEC_TICKERS:
+            return json.dumps(companies).encode()
+        if "submissions" in url:
+            return json.dumps(submissions).encode()
+        if url.endswith("-index.htm"):
+            folder = url.split("/")[-2]
+            if folder == "000000123426000008":  # an officer change with no press release
+                return b"<table><tr><td>8-K</td></tr></table>"
+            return INDEX_HTML.replace("000000123426000009", folder).encode()
+        if url.endswith("ex991.htm"):
+            if "000000123426000009" in url:
+                return b"<p>Example Chips reports third-quarter revenue of $10 billion.</p>"
+            return b"<p>Example Chips unveils its next-generation accelerator.</p>"
+        return b"<p>Cover page.</p>"
+
+    monkeypatch.setattr(sources, "_get", fake_get)
+    result = sources.fetch_sec_filings("NVDA", "Example Chips", "FinancePrototype developer@example.com")
+    assert result.warnings == []
+    releases = [d for d in result.documents if d.document_type == "announcement"]
+    assert len(releases) == 2  # press_release_limit; the 7.01 filing is never requested
+    assert not any("000000123426000006" in url for url in calls)
+    earnings, product = releases
+    assert earnings.classification["role"] == "company_info"
+    assert earnings.classification["method"] == "8k_item"
+    assert earnings.metadata["form"] == "8-K EX-99.1"
+    assert earnings.metadata["ticker"] == "NVDA"
+    assert earnings.content_kind == "full_text"
+    assert earnings.source_url.endswith("/000000123426000009/ex991.htm")
+    assert product.classification["role"] == "product_event"
+    assert "unveils" in product.content_text
