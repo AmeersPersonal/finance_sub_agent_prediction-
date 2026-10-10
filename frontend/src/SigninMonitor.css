@@ -1,0 +1,118 @@
+@import url('https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap');
+ 
+.signin-page {
+  height: 100vh;
+  box-sizing: border-box;
+  background: #3f5e47;
+  color: #ede3bd;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.signin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+}
+.signin-header p { margin: 0; }
+.signin-header a { color: #ede3bd; }
+.logo { font-weight: 800; text-decoration: none; }
+ 
+/* The drawing. Everything on top is placed in % so it scales with it. */
+.scene {
+  --look-x: 0;
+  --look-y: 0;
+  container-type: inline-size;
+  position: relative;
+  /* As big as the window allows while keeping the 16:9 drawing whole:
+     full width, unless that would make it taller than the space under the header. */
+  width: min(100%, calc((100vh - 60px) * 16 / 9));
+  margin: auto;
+}
+.scene-art { display: block; width: 100%; height: auto; }
+ 
+.spot {
+  position: absolute;
+  font-family: 'Gochi Hand', cursive;
+  color: #3b3b3b;
+}
+.label { top: 23.4%; font-size: 4cqw; transform: translateX(-50%); }
+.label-email { left: 29.4%; }
+.label-password { left: 67.8%; }
+ 
+.back, .confirm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.back { left: 14.45%; top: 9%; width: 9.35%; height: 5.4%; font-size: 3cqw; }
+.confirm { left: 38.9%; top: 52%; width: 20.1%; height: 8.3%; font-size: 4.4cqw; }
+.back:hover, .confirm:hover { background: rgb(255 255 255 / 0.25); }
+ 
+.error { left: 20%; top: 43%; width: 60%; margin: 0; text-align: center; font-size: 2cqw; color: #7a2a1d; }
+ 
+/* ---- Eyes: sit exactly on the yellow boxes ---- */
+.eye {
+  position: absolute;
+  top: 33.8%;
+  width: 23.3%;
+  height: 5.4%;
+  overflow: hidden;
+  box-shadow: 0 0 20px 3px rgb(255 236 140 / 0.5);
+}
+.eye-email { left: 19.98%; }
+.eye-password { left: 54.06%; }
+ 
+.eye input {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 4%;
+  border: 0;
+  outline: none;
+  background: #f4e48c;
+  color: #2e2f2b;
+  font-family: 'Gochi Hand', cursive;
+  font-size: 2.2cqw;
+}
+/* Stop the browser's autofill from turning the boxes white/blue */
+.eye input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 100px #f4e48c inset;
+  -webkit-text-fill-color: #2e2f2b;
+}
+.eye:focus-within { outline: 3px solid #fff6c2; outline-offset: 2px; }
+ 
+/* The dot (pupil) */
+.dot {
+  position: absolute;
+  top: 12%;
+  left: 46.5%;
+  width: 7%;
+  height: 76%;
+  background: #2e2f2b;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(calc(var(--look-x) * 550%), calc(var(--look-y) * 10%));
+  transition: transform 0.15s;
+}
+.typing .dot { display: none; }
+ 
+/* The panel that closes over the eye */
+.lid {
+  position: absolute;
+  inset: 0;
+  background: #aabbc4;
+  border-bottom: 2px solid #3a3a3a;
+  pointer-events: none;
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.1s;
+}
+.closed .lid { transform: scaleY(1); }

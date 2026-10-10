@@ -18,7 +18,7 @@ function App() {
       <Route path = "/Dashboard" element = {<Dashboard/>}/>
       
      </Routes>
-    <p>Testing</p>
+    
     </>
   )
 }
