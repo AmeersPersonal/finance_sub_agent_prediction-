@@ -8,7 +8,7 @@ export default function Hero({ connection, feed }) {
       <div>
         <p className="eyebrow">THE MARKET, EXPLAINED</p>
         <p className="serif text-[clamp(1.5rem,2.8vw,2.35rem)] leading-tight">{strings.welcome}</p>
-        <h1 className="serif text-[clamp(2rem,4vw,3.4rem)] leading-tight">{strings.welcomeQuestion}</h1>
+        <h1 id="dashboard-title" tabIndex={-1} className="serif text-[clamp(2rem,4vw,3.4rem)] leading-tight">{strings.welcomeQuestion}</h1>
         <p className="muted small mt-1">{strings.educational} {strings.mock}</p>
       </div>
       <div className="self-end small" role="status" aria-live="polite">

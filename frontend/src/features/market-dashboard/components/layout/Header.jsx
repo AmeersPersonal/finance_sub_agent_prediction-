@@ -1,4 +1,5 @@
 // Top bar: product name, ticker search, learning-mode switch, theme toggle, account menu.
+import { Link } from 'react-router-dom';
 import { strings } from '../../constants/strings.js';
 import Search from '../ui/Search.jsx';
 import AvatarMenu from '../ui/AvatarMenu.jsx';
@@ -12,6 +13,7 @@ export default function Header({ symbol, onSelect, prefs, setPrefs }) {
           <Search symbol={symbol} onSelect={onSelect} />
         </nav>
         <div className="small muted hidden xl:block">{strings.usHours}</div>
+        <Link to="/scenarios" className="action small">{strings.scenarios}</Link>
         <label className="flex items-center gap-2 small cursor-pointer">
           <input
             type="checkbox"

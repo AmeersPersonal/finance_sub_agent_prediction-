@@ -56,8 +56,16 @@ export default function MarketDashboard() {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [announcement, announce] = useState('');
   const feed = useRef(null);
+  const focusRestored = useRef(false);
 
   const asset = assets.find((a) => a.symbol === symbol);
+
+  // Returning from Scenarios should land on the page heading, once.
+  useEffect(() => {
+    if (focusRestored.current || !location.state?.fromScenarios) return;
+    focusRestored.current = true;
+    document.getElementById('dashboard-title')?.focus();
+  }, [location.state]);
 
   // Start the mock live feed once.
   useEffect(() => {

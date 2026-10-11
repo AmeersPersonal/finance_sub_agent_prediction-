@@ -4,7 +4,7 @@ export const strings = {
   skipStory: 'Skip to Today’s story', skipChart: 'Skip to chart', skipForecast: 'Skip to forecast', skipNews: 'Skip to news',
   search: 'Search stocks, funds, and crypto', searchHint: 'Use arrow keys to browse; Enter selects.',
   usHours: 'US market hours · regular session 9:30 AM–4:00 PM ET',
-  learning: 'Learning mode', theme: 'Switch color theme', account: 'Account menu', signedIn: 'Signed-in reader',
+  learning: 'Learning mode', scenarios: 'Scenarios', theme: 'Switch color theme', account: 'Account menu', signedIn: 'Signed-in reader',
   settings: 'Reader settings', close: 'Close menu',
   pulse: 'Market pulse', story: 'Today’s story', chart: 'Price chart', why: 'Why it moved', forecast: 'What might happen next',
   calendar: 'Economic calendar', news: 'News', watchlist: 'Your watchlist', accessibility: 'Accessibility notes',
