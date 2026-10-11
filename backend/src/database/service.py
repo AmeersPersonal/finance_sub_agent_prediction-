@@ -169,9 +169,9 @@ def mix_roles(candidates: dict[str, list[dict]], limit: int) -> list[dict]:
 
 
 SNOWFLAKE_FALLBACK = "Snowflake RAG unavailable; evidence came from PostgreSQL keyword search."
-# Chunks stored by this forecast's own refresh are indexed before it searches.
-# A larger backlog (first run, bulk import) is left to `python -m snowflake_rag sync`.
-SYNC_BATCHES_PER_FORECAST = 5
+# The forecast's ticker's new chunks (from its own refresh) are indexed before it
+# searches. Other tickers' backlog is left to `python -m snowflake_rag sync`.
+SYNC_BATCHES_PER_FORECAST = 2
 
 
 @contextmanager
@@ -197,7 +197,7 @@ def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
         repo = DatabaseRepository(connection)
         if index is not None:
             try:
-                sync_index(repo, index, max_batches=SYNC_BATCHES_PER_FORECAST)
+                sync_index(repo, index, max_batches=SYNC_BATCHES_PER_FORECAST, ticker=ticker)
             except SnowflakeError:
                 warnings.append(SNOWFLAKE_FALLBACK)
                 index = None

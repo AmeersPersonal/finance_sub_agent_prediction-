@@ -1,17 +1,23 @@
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+/* Handwriting font, the same one used on the sign-in, sign-up and landing pages */
+@import url("https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap");
 
 /* Tokens live on the page root so they do not restyle the rest of the app. */
 .mms {
-  --color-bg: #f3f7ee;
+  /* Light mode palette, taken from the hand-drawn monitor scene */
+  --color-bg: #e8f0f3;
   --color-panel: #ffffff;
-  --color-rule: #d6e2cf;
-  --color-ink: #183126;
-  --color-ink-2: #53665a;
+  --color-rule: #d4dde1;
+  --color-ink: #2e2f2b;
+  --color-ink-2: #575f64;
   --color-up: #176b4d;
   --color-down: #a96a00;
-  --color-accent: #b68a00;
-  --color-focus: #8a6800;
-  --font-heading: "Fraunces", Georgia, serif;
+  --color-accent: #4f7286;
+  --color-focus: #4f7286;
+  /* Headings use the handwriting font. To use it for ALL text, also change
+     --font-body below to the same value. To go back, use:
+     "Fraunces", Georgia, serif */
+  --font-heading: "Gochi Hand", "Comic Sans MS", cursive;
   --font-body: "IBM Plex Sans", Arial, sans-serif;
   --font-data: "IBM Plex Mono", ui-monospace, monospace;
   --space: 8px;
@@ -26,30 +32,32 @@
 }
 
 .mms[data-theme="dark"] {
-  --color-bg: #122019;
-  --color-panel: #1b2b22;
-  --color-rule: #34483b;
-  --color-ink: #f3f1e6;
-  --color-ink-2: #b9c8ba;
+  /* Dark mode: the light palette with its hue turned ~10° clockwise
+     and saturation lowered slightly, darkened into a blue-slate night. */
+  --color-bg: #151a20;
+  --color-panel: #1d252d;
+  --color-rule: #343f4b;
+  --color-ink: #e5ebf0;
+  --color-ink-2: #aab9c5;
   --color-up: #65d6a4;
   --color-down: #f2c15b;
-  --color-accent: #f1c75b;
-  --color-focus: #ffe08a;
+  --color-accent: #95a7bb;
+  --color-focus: #eaeb8e;
   color-scheme: dark;
 }
 
 html:has(.mms),
 html:has(.mms) body {
   margin: 0;
-  background: #f3f7ee;
-  color: #183126;
+  background: #e8f0f3;
+  color: #2e2f2b;
   color-scheme: light;
 }
 
 html:has(.mms[data-theme="dark"]),
 html:has(.mms[data-theme="dark"]) body {
-  background: #122019;
-  color: #f3f1e6;
+  background: #151a20;
+  color: #e5ebf0;
   color-scheme: dark;
 }
 
@@ -495,6 +503,13 @@ html:has(.mms) #root {
   font-weight: 600;
 }
 
+/* Light mode: yellow button, like CONFIRM on the monitor */
+.mms:not([data-theme="dark"]) .resetButton {
+  background: #f4e48c;
+  color: #2e2f2b;
+  font-weight: 600;
+}
+
 .mms .resultsHead {
   display: flex;
   flex-wrap: wrap;
@@ -854,4 +869,48 @@ html:has(.mms) #root {
     background: CanvasText;
     border-color: CanvasText;
   }
+}
+
+/* ---------- Handwriting headings ----------
+   Gochi Hand only comes in one weight, so bold headings would be faked
+   (smeared) by the browser. These keep it at its natural weight and undo
+   the tight letter-spacing that was tuned for the old serif font. */
+.mms h1,
+.mms h2,
+.mms h3,
+.mms .avatarButton,
+.mms .bannerCopy,
+.mms .resultName {
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- Light mode header: dark gray like the wall behind the monitor ----------
+   The page colors are swapped for header colors inside the header only,
+   so the title, breadcrumb, status and buttons all switch automatically. */
+.mms:not([data-theme="dark"]) .siteHeader {
+  --color-panel: #4a4a4a;
+  --color-rule: #5a5a5a;
+  --color-ink: #ede3bd;
+  --color-ink-2: #c9c2a0;
+  --color-accent: #f4e48c;
+  --color-focus: #f4e48c;
+  background: #404040;
+  color: var(--color-ink);
+}
+
+/* ---------- Dark mode: darker header and yellow Reset button ---------- */
+.mms[data-theme="dark"] .siteHeader {
+  --color-panel: #1a2128;
+  --color-ink: #ebeac6;
+  --color-ink-2: #c0c09a;
+  --color-accent: #eaeb8e;
+  background: #0f1317;
+  color: var(--color-ink);
+}
+
+.mms[data-theme="dark"] .resetButton {
+  border-color: #eaeb8e;
+  background: #eaeb8e;
+  color: #151a20;
 }

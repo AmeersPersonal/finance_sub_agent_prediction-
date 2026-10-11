@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { signIn } from '../lib/auth'
 import monitor from '../assets/signin2-v2.png'
 import '../SigninMonitor.css'
 
@@ -45,13 +46,8 @@ export default function SigninMonitor() {
     setError('')
     setLoading(true)
     try {
-      // Placeholder endpoint: confirm with your backend teammates
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      })
-     // if (!res.ok) throw new Error('Invalid email or password')
+      if (!email.trim() || !password) throw new Error('Enter your email and password')
+      await signIn(email, password)
       navigate('/dashboard')
     } catch (err) {
       setError(err.message)
@@ -72,7 +68,7 @@ export default function SigninMonitor() {
     <div className="signin-page">
       <header className="signin-header">
         <Link to="/" className="logo">Market Moves</Link>
-        <p>New here? <Link to="/signup">Create an account</Link></p>
+        <p> <Link to="/signup"> New here? Create an account</Link></p>
       </header>
 
       <form ref={sceneRef} className="scene" onSubmit={handleSubmit} noValidate>

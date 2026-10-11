@@ -2,7 +2,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { strings } from '../../constants/strings.js';
 import { TIMEFRAMES } from '../../constants/options.js';
-import { events, base } from '../../data/mockData.js';
 import { money, percent, signed, dateText } from '../../lib/format.js';
 import { marketStatus } from '../../lib/marketStatus.js';
 import { tickValues } from '../../lib/tickStore.js';
@@ -12,7 +11,7 @@ import PriceCell from '../ui/PriceCell.jsx';
 import ChartGraphic from './ChartGraphic.jsx';
 
 export default function ChartPanel({
-  asset, tf, setTf, history, quote, forecast, selectedEvent, setSelectedEvent, learning, announce,
+  asset, tf, setTf, history, quote, prediction, moves, selectedEvent, setSelectedEvent, learning, announce, onLoad,
 }) {
   const [table, setTable] = useState(false);
   const [index, setIndex] = useState(0);
@@ -24,9 +23,9 @@ export default function ChartPanel({
   const first = points[0];
   const last = points[points.length - 1];
   const change = first && last ? percent(last.value, first.value) : 0;
-  const relevant = events.filter((e) => e.symbol === asset.symbol);
+  const relevant = moves;
   const summary = first && last
-    ? `${asset.name}, ${tf}: ${change >= 0 ? 'rose' : 'fell'} from ${money(first.value)} to ${money(last.value)}, ${signed(change)}. ${relevant.length} explained events available.`
+    ? `${asset.name}, ${tf}: ${change >= 0 ? 'rose' : 'fell'} from ${money(first.value)} to ${money(last.value)}, ${signed(change)}. ${relevant.length} largest moves marked.`
     : `${asset.name}, ${tf}: chart loading.`;
 
   // Lazy-load the chart library; if it fails, the SVG fallback is used.
@@ -40,7 +39,7 @@ export default function ChartPanel({
 
   function selectEvent(e) {
     setSelectedEvent(e.id);
-    announce(`${e.category}: ${e.explanation}`);
+    announce(`${dateText(e.t)}: ${signed(e.change)}. ${e.headlines[0]?.headline || strings.noMoveHeadline}`);
     document.getElementById('why')?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -67,13 +66,13 @@ export default function ChartPanel({
         </div>
         {quote.data && (
           <div className="text-right">
-            <PriceCell symbol={asset.symbol} previous={quote.data.previousClose} learning={learning} />
+            <PriceCell symbol={asset.symbol} price={quote.data.price} previous={quote.data.previousClose} learning={learning} />
             <div className="small muted">{strings.statuses[marketStatus(asset, quote.data, 'normal')]}</div>
           </div>
         )}
       </div>
 
-      <StatePanel name={strings.chart} state={history} headingRef={heading}>
+      <StatePanel name={strings.chart} state={history} headingRef={heading} onLoad={onLoad} emptyText={strings.noPrices}>
         <div role="tablist" aria-label="Chart timeframe" className="flex gap-1 flex-wrap mb-3">
           {TIMEFRAMES.map((t, i) => (
             <button
@@ -95,7 +94,10 @@ export default function ChartPanel({
           <div className="flex gap-2">
             <button
               className="action small"
-              onClick={() => announce(`${asset.name}, current mock price ${money(tickValues[asset.symbol]?.price || base[asset.symbol][0])}.`)}
+              onClick={() => {
+                const price = tickValues[asset.symbol]?.price ?? quote.data?.price;
+                announce(price ? `${asset.name}, last saved price ${money(price)}.` : `${asset.name}: no saved price yet.`);
+              }}
             >
               {strings.readPrice}
             </button>
@@ -124,14 +126,14 @@ export default function ChartPanel({
           </div>
         ) : (
           <div role="img" tabIndex={0} aria-label={summary} onKeyDown={movePoint} className="rounded focus-visible:outline">
-            <ChartGraphic points={points} forecast={forecast.data || null} event={selectedEvent} api={chartApi} />
+            <ChartGraphic points={points} prediction={prediction} moves={relevant} event={selectedEvent} api={chartApi} />
           </div>
         )}
 
         <div className="flex flex-wrap gap-2 mt-3" aria-label="Chart event markers">
           {relevant.map((e) => (
             <button key={e.id} className="action small" aria-pressed={selectedEvent === e.id} onClick={() => selectEvent(e)}>
-              ● {dateText(e.t)} · {e.category}
+              ● {dateText(e.t)} · <span className={e.change >= 0 ? 'up' : 'down'}>{signed(e.change)}</span>
             </button>
           ))}
         </div>

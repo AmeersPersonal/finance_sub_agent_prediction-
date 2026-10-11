@@ -10,13 +10,15 @@ evidence; there is no JSONL path here. The Gemini client is a dependency
 Creating a forecast spends model quota, so it needs a signed-in user
 (`API_REQUIRE_SIGN_IN=false` turns that off for local development) and is
 rate-limited per caller (`API_PREDICTIONS_PER_HOUR`). Rate limits, background
-jobs and the score cache are in-process (`api/state.py`): run one worker.
+jobs and the score cache are in-process (`api/state.py`): run one worker. On AWS
+Lambda, `JOBS_BACKEND=lambda` keeps jobs in PostgreSQL instead (`api/lambda_jobs.py`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -37,6 +39,7 @@ from ai.live import live_feed_from_env
 from ai.llm import JsonLLM, build_llm
 from ai.modes import resolve_modes
 from ai.personas import Strategy
+from api import lambda_jobs
 from api.state import JobStore, RateLimiter, ScoreCache
 from charts import backtest_charts, prediction_charts, price_charts, score_charts
 from database.connection import DatabaseError, connect
@@ -44,11 +47,13 @@ from database.repository import DatabaseRepository
 from oauth.provider import OAuthSettings
 from oauth.routes import current_user, get_settings, get_store
 from oauth.routes import router as oauth_router
+from api.accounts import router as accounts_router
 from oauth.sessions import SessionStore
 from paper.ledger import OrderRejected, Side
 from paper.service import PaperTrading
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+log = logging.getLogger(__name__)
 
 AgeBand = Literal["18-24", "25-39", "40-54", "55-65"]
 PriceInterval = Literal["1d", "5m"]
@@ -66,6 +71,12 @@ def _int_env(name: str, default: int) -> int:
 prediction_limiter = RateLimiter(_int_env("API_PREDICTIONS_PER_HOUR", 10), window=3600)
 jobs = JobStore()
 score_cache = ScoreCache(_int_env("API_SCORE_CACHE_SECONDS", 300))
+
+
+@lru_cache(maxsize=1)
+def durable_jobs() -> lambda_jobs.DatabaseJobStore | None:
+    """The PostgreSQL-backed job store when `JOBS_BACKEND=lambda`, else None (use `jobs`)."""
+    return lambda_jobs.from_env()
 
 
 def normalize_ticker(value: str) -> str:
@@ -206,6 +217,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(oauth_router)
+app.include_router(accounts_router)
 
 
 @app.exception_handler(DatabaseError)
@@ -257,6 +269,10 @@ async def create_prediction_job(body: PredictionRequest, llm: JsonLLM = Depends(
     """Start a forecast in the background; poll `GET /prediction-jobs/{job_id}`."""
     kwargs = _prediction_kwargs(body, llm)
     _spend_quota(caller)
+    durable = durable_jobs()
+    if durable is not None:  # Lambda: the job lives in PostgreSQL and runs in a second invocation
+        view = await asyncio.to_thread(durable.submit, caller, body.model_dump(mode="json"))
+        return {**view, "poll": f"/prediction-jobs/{view['job_id']}"}
     job = jobs.submit(caller, lambda: _service("predict_and_store", body.ticker, **kwargs))
     return {**job.view(), "poll": f"/prediction-jobs/{job.id}"}
 
@@ -265,10 +281,43 @@ async def create_prediction_job(body: PredictionRequest, llm: JsonLLM = Depends(
 async def prediction_job(job_id: str, caller: str = Depends(prediction_caller)):
     """`status`: queued, running, succeeded (with `prediction`) or failed (with `error`).
     Only the caller who started a job can see it; finished jobs are kept for an hour."""
-    job = jobs.get(job_id, caller)
-    if job is None:
+    durable = durable_jobs()
+    if durable is not None:
+        view = await asyncio.to_thread(durable.get, job_id, caller)
+    else:
+        job = jobs.get(job_id, caller)
+        view = job.view() if job is not None else None
+    if view is None:
         raise HTTPException(status_code=404, detail="Job not found (or it finished over an hour ago).")
-    return job.view()
+    return view
+
+
+@app.post("/internal/lambda-events", include_in_schema=False)
+async def run_lambda_job(request: Request):
+    """The worker half of a durable job: the Lambda Web Adapter posts the signed
+    event here (`AWS_LWA_PASS_THROUGH_PATH`). Anything unsigned is refused."""
+    durable = durable_jobs()
+    try:
+        event = await request.json()
+    except ValueError:
+        event = None
+    if durable is None or not durable.verify(event):
+        raise HTTPException(status_code=403, detail="Forbidden.")
+    job_id = str(event.get("job_id", ""))
+    if not await asyncio.to_thread(durable.claim, job_id):
+        return {"status": "ignored"}  # a retry or replay: the job isn't queued
+    try:
+        body = PredictionRequest(**event["request"])
+        kwargs = _prediction_kwargs(body, get_llm())
+        result = await _service("predict_and_store", body.ticker, **kwargs)
+        await asyncio.to_thread(durable.finish, job_id, result=result)
+    except HTTPException as exc:  # already a sanitized, user-facing error
+        await asyncio.to_thread(durable.finish, job_id, error={"status_code": exc.status_code, "detail": exc.detail})
+    except Exception as exc:  # never leak provider or database details
+        log.warning("prediction job %s failed: %s", job_id, type(exc).__name__)
+        await asyncio.to_thread(durable.finish, job_id, error={
+            "status_code": 500, "detail": "The forecast failed. Try again later."})
+    return {"status": "done"}
 
 
 def _report_json(report) -> dict[str, Any]:
@@ -404,7 +453,9 @@ class PreferencesRequest(BaseModel):
 
 def account_reference(user: dict[str, Any], settings: OAuthSettings) -> str:
     """The provider's stable subject id, namespaced by provider host. Never the email,
-    which can change hands."""
+    which can change hands. Email/password accounts are already namespaced (`password:<id>`)."""
+    if user.get("provider") == "password":
+        return user["sub"]
     return f"{urlsplit(settings.userinfo_url).hostname}:{user['sub']}"
 
 

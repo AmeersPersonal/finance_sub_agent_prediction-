@@ -1,7 +1,8 @@
 # CLAUDE.md: Backend
 
 Guidance for AI coding agents working in `backend/` (the Python backend of the
-finance sub-agent prediction project). It does not cover any frontend.
+finance sub-agent prediction project). Repo-wide steps (after pulling, running both
+apps, tests, the frontend/backend API contract) are in the root `AGENTS.md`.
 
 ## What it does
 
@@ -57,7 +58,9 @@ backend/
     ├── requirements.lock     # every dependency, pinned with hashes (uv pip compile --universal)
     ├── api/
     │   ├── main.py           # the one FastAPI app: forecasts (sign-in, rate limit, jobs), reads, /score, /me
-    │   └── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
+    │   ├── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
+    │   ├── lambda_jobs.py    # JOBS_BACKEND=lambda: PostgreSQL-backed jobs, signed worker events (AWS Lambda)
+    │   └── accounts.py       # POST /signup, /login: email/password accounts, same session as Google
     ├── ai/
     │   ├── main.py           # predict(): fetch -> live quote? -> sentiment -> personas -> aggregate
     │   ├── tool.py           # parallel fetching -> MarketSnapshot; clean_daily repairs Yahoo's last bar
@@ -108,7 +111,7 @@ backend/
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
     ├── snowflake_rag/        # optional Snowflake vector index over stored chunks (RAG_BACKEND=snowflake)
     ├── database/             # migrations, repository, orchestration, backup.py, roles.sql, setup/docs
-    ├── oauth/                # Google OIDC sign-in (code + PKCE); sessions in memory or PostgreSQL
+    ├── oauth/                # Google OIDC sign-in (code + PKCE), email/password accounts; sessions in memory or PostgreSQL
     ├── paper/                # simulated trading (no real money): Decimal ledger + PostgreSQL service behind /paper/*
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
@@ -144,7 +147,9 @@ python -m ml stacker                                  # model B; needs ~300 scor
 python -m ml coverage [--save]                        # accuracy at coverage, calibration; --save fits data/call_policy.json
 python -m ml bias                                     # persona calls and votes vs outcomes
 python -m ml replay [--dry-run]                       # backdated estimate of accuracy; spends Gemini quota
+python -m database.migrate                            # after pulling: applies only new migrations
 uvicorn api.main:app --reload                         # HTTP API (database-backed), docs at /docs
+python -m snowflake_rag sync                          # index new passages for RAG_BACKEND=snowflake
 python -m database.backup                             # pg_dump + retention schedule (database/docs/retention-and-access.md)
 pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage
@@ -161,7 +166,9 @@ optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
 Optional: `RAG_BACKEND=snowflake` with the `SNOWFLAKE_*` key-pair settings,
 `ALT_LLM_BASE_URL` / `ALT_LLM_MODEL` / `ALT_LLM_API_KEY` (a second,
 OpenAI-compatible model provider), `LIVE_FEED=finnhub` with `FINNHUB_API_KEY`,
-`OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose.
+`OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose. AWS Lambda
+hosting (`Dockerfile.lambda`, `deploy/aws/`) sets `JOBS_BACKEND=lambda` and `JOB_SIGNING_KEY`
+so forecast jobs live in PostgreSQL (`api/lambda_jobs.py`).
 
 ## Hard rules
 
@@ -277,8 +284,10 @@ Policy requires approval first and forbids sharing its data. Every document has 
 retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
 retrieval is optional: `RAG_BACKEND=snowflake` fuses Snowflake Cortex rankings
 with the keyword search (`snowflake_rag/spec.md`), and PostgreSQL reloads every
-ranked chunk under the same point-in-time rules. Frontend wiring is not
-implemented. Retention, backups, source
+ranked chunk under the same point-in-time rules. The dashboard
+(`frontend/src/features/market-dashboard`) reads these routes, and
+`tests/test_frontend_contract.py` pins the fields it uses: change a field the
+frontend reads and you change the frontend too. Retention, backups, source
 use and database roles: `database/docs/retention-and-access.md`. Record prompt changes in
 `agents.PROMPT_CHANGELOG` (and `ai/spec.md`).
 

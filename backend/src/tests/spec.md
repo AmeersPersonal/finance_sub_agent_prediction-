@@ -36,6 +36,9 @@ database. API tests use an in-process client with mocked services.
 | `test_cli.py` | `main.py`: argument errors, `--weights`, `--backtest`, rendering, predict + log |
 | `test_api.py` | The HTTP API with a faked service and LLM: routes, validation, option pass-through, error statuses, `/score`, OAuth mount, CORS |
 | `test_api_access.py` | Sign-in on forecasts, per-user rate limits, background prediction jobs, the score cache, `/me/preferences` |
+| `test_lambda_jobs.py` | Durable (Lambda) prediction jobs: event signing, submit/claim/finish with a fake store, the refused internal route |
+| `test_accounts.py` | Email/password accounts: `/signup`, `/login`, scrypt hashing, same 401 for wrong email or password, attempt limits, sessions shared with Google sign-in |
+| `test_frontend_contract.py` | The API fields, ordering and error bodies the dashboard and sign-in pages read, through the real repository (PostgreSQL checks need `TEST_DATABASE_URL`); the frontend's ticker rule equals the API's |
 | `test_backup.py` | `database.backup`: retention schedule, pruning, credentials kept out of pg_dump's arguments |
 | `test_charts.py` | `charts/` builders (alignment, JSON-safe nulls, thin data, 5m VWAP and volume profile, equity curve matching `run_regression`, accuracy over time) and the `/charts` routes |
 | `test_paper.py` | Paper-trading arithmetic (buy, average cost, sell, P&L, rejections) and `/paper/*` routes with a faked service; the PostgreSQL round trip is in `test_database.py` |

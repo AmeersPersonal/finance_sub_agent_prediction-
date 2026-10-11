@@ -1,19 +1,22 @@
-// "Today's story": a plain-language explanation of the selected asset's move.
+// "Today's story": the latest move in plain language, the headline mood from the latest
+// forecast (an AI summary of the headlines it read), and the newest saved headline.
 import { useRef } from 'react';
 import { strings } from '../../constants/strings.js';
-import { events, newsData } from '../../data/mockData.js';
-import { percent, compact } from '../../lib/format.js';
+import { percent, dateText } from '../../lib/format.js';
 import StatePanel from '../ui/StatePanel.jsx';
 import Term from '../ui/Term.jsx';
 
-export default function StoryPanel({ asset, quote, setSelectedEvent, learning }) {
+const toneLabel = (overall) => (overall > 0.15 ? 'Headlines lean positive' : overall < -0.15 ? 'Headlines lean negative' : 'Headlines are mixed');
+
+export default function StoryPanel({ asset, quote, news, prediction, moves, setSelectedEvent, learning, onLoad }) {
   const heading = useRef(null);
-  const e = events.find((x) => x.symbol === asset.symbol) || events[0];
-  const headline = newsData.find((n) => n.eventId === e.id);
   const move = quote.data ? percent(quote.data.price, quote.data.previousClose) : 0;
+  const latest = news.data?.slice().sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))[0];
+  const sentiment = prediction?.headline_sentiment;
+  const largest = moves[0];
 
   function seeOnChart() {
-    setSelectedEvent(e.id);
+    if (largest) setSelectedEvent(largest.id);
     document.getElementById('chart')?.scrollIntoView({ block: 'center' });
     document.querySelector('#chart [role=img]')?.focus();
   }
@@ -23,31 +26,38 @@ export default function StoryPanel({ asset, quote, setSelectedEvent, learning })
       <div className="eyebrow mb-2">THE DAILY EXPLANATION · {asset.type.toUpperCase()}</div>
       <h2 id="story-heading" ref={heading} tabIndex={-1}>{strings.story}</h2>
 
-      <StatePanel name={strings.story} state={quote} headingRef={heading}>
-        <p className="serif text-[clamp(1.35rem,2.3vw,2rem)] leading-snug mb-5">
-          {asset.name} {move < 0 ? 'fell' : 'rose'} {Math.abs(move).toFixed(1)}% versus its previous close. {e.explanation}
+      <StatePanel name={strings.story} state={quote} headingRef={heading} onLoad={onLoad} emptyText={strings.noPrices}>
+        <p className="serif text-[clamp(1.35rem,2.3vw,2rem)] leading-snug mb-4">
+          {asset.name} {move < 0 ? 'fell' : 'rose'} {Math.abs(move).toFixed(1)}% versus its previous close
+          {quote.data?.asOf && <> as of {dateText(quote.data.asOf)}</>}.
         </p>
-        <div className="tag mb-4">{e.category}</div>
 
-        {headline && (
+        {sentiment?.summary ? (
+          <div className="mb-5">
+            <p className="mb-2">{sentiment.summary}</p>
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="tag">{toneLabel(sentiment.overall)}</span>
+              <span className="small muted">AI summary of the headlines read by the {dateText(prediction.generated_at)} forecast</span>
+            </div>
+            {learning && (
+              <p className="small muted mt-2">
+                <Term name={strings.tone} description={strings.toneExplain} /> — {strings.toneExplain}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="small muted mb-5">{strings.noStory}</p>
+        )}
+
+        {latest && (
           <p className="small border-l-2 pl-3 mb-5" style={{ borderColor: 'var(--accent)' }}>
-            Related headline: {headline.headline} <span className="muted">· {headline.source}</span>
+            Latest headline:{' '}
+            <a href={latest.url} target="_blank" rel="noopener noreferrer">{latest.headline}</a>
+            <span className="muted"> · {latest.source}</span>
           </p>
         )}
 
-        <button className="action primary" onClick={seeOnChart}>{strings.seeChart} →</button>
-
-        <div className="border-t rule mt-6 pt-4 flex justify-between gap-3">
-          <span>
-            <Term name={strings.marketCap} description={strings.marketCapExplain} />
-            {learning && <span className="block small muted">{strings.marketCapExplain}</span>}
-          </span>
-          <span className="mono text-right" aria-label={`${asset.marketCap.toLocaleString('en-US')} US dollars`}>
-            {compact(asset.marketCap)}
-          </span>
-        </div>
-
-        {quote.data?.status === 'halted' && <p className="mt-3 down">{strings.halt} · {strings.haltExplain}</p>}
+        {largest && <button className="action primary" onClick={seeOnChart}>{strings.seeChart} →</button>}
       </StatePanel>
     </section>
   );

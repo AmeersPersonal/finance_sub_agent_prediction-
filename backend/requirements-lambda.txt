@@ -1,0 +1,3 @@
+# Extra packages for the AWS Lambda image only (Dockerfile.lambda), on top of
+# src/requirements-api.lock. boto3 starts the forecast worker (api/lambda_jobs.py).
+boto3==1.43.111

@@ -28,7 +28,7 @@ the same pipeline (the API always through `database.service`). Everything else i
 | `finance/` | Pure numeric functions, no LLM, no network (`finance/spec.md`) |
 | `ml/` | Learned models (price classifier, persona stacker, calibration) behind walk-forward gates; `python -m ml` (`ml/spec.md`) |
 | `sources/` | Online evidence: Yahoo/Google News RSS, Hacker News, optional SEC filings and press releases (`sources/spec.md`) |
-| `oauth/` | Google OIDC sign-in routes and in-memory sessions (`oauth/spec.md`) |
+| `oauth/` | Google OIDC sign-in routes, sessions (memory or PostgreSQL) and password hashing (`oauth/spec.md`); email/password routes are `api/accounts.py` |
 | `database/` | PostgreSQL (Tiger Data) migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
 | `paper/` | Simulated stock trading: virtual cash, long-only positions, order log; no real money (`paper/spec.md`) |
 | `snowflake_rag/` | Optional Snowflake vector index over stored chunks, fused with keyword retrieval; `python -m snowflake_rag` (`snowflake_rag/spec.md`) |

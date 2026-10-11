@@ -8,7 +8,8 @@
 - [x] `GET /score` and `/score/charts` share a cached report (`API_SCORE_CACHE_SECONDS`, default 300); `?refresh=true` recomputes, and `POST /predictions/{id}/evaluate` clears it.
 - [x] Account preferences behind sign-in: `GET`, `PUT` and `DELETE /me/preferences`, keyed by the provider's subject id.
 - [x] Simulated trading behind sign-in: `GET /paper/account`, `GET`/`POST /paper/orders`, `POST /paper/reset` (`paper/`).
-- [ ] Rate limits, jobs and the score cache are per process (`state.py`), so the API runs as one worker. Move them to PostgreSQL before running several workers; sign-in sessions already can be (`OAUTH_SESSION_STORE=database`).
+- [x] AWS Lambda hosting: with `JOBS_BACKEND=lambda`, prediction jobs live in `prediction_jobs` (migration 010) and run in a second, signed invocation (`lambda_jobs.py`, `POST /internal/lambda-events`). Deployment: `deploy/aws/README.md`.
+- [ ] Rate limits, jobs and the score cache are per process (`state.py`), so the API runs as one worker (on Lambda the rate limit and score cache are per instance). Move them to PostgreSQL before running several workers; sign-in sessions already can be (`OAUTH_SESSION_STORE=database`).
 
 ## Purpose
 
@@ -32,6 +33,8 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | --- | --- |
 | `main.py` | The FastAPI app: routes, request models, sign-in and quota checks |
 | `state.py` | In-process state: the per-caller rate limiter, background prediction jobs, the score cache |
+| `lambda_jobs.py` | `JOBS_BACKEND=lambda`: PostgreSQL-backed prediction jobs, HMAC-signed worker events (`JOB_SIGNING_KEY`), async self-invoke with boto3 (Lambda image only) |
+| `accounts.py` | `POST /signup`, `POST /login`: email/password accounts (`user_accounts`), hashed with `oauth/passwords.py`, signed in with the same session as Google |
 
 ## Routes
 
@@ -44,6 +47,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | `POST /predictions` | Generate and store a forecast (options below). Signed-in, rate-limited |
 | `POST /prediction-jobs` | The same, in the background: 202 with `job_id` and `poll` |
 | `GET /prediction-jobs/{job_id}` | `status` queued, running, succeeded (with `prediction`) or failed (with `error`); the creator only, kept an hour |
+| `POST /internal/lambda-events` | Not for clients, hidden from `/docs`: the Lambda worker for `JOBS_BACKEND=lambda`; 403 unless the event carries a valid signature |
 | `GET /predictions?ticker=AAPL&limit=20` | Most recent saved forecasts |
 | `GET /predictions/{id}` | One saved forecast |
 | `GET /predictions/{id}/evaluation` | Saved evaluations, or `"status": "pending"` (no price fetch) |
@@ -54,6 +58,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | `GET /predictions/{id}/charts` | Chart-ready series for one forecast: votes, conviction, strategy scores, flat band, baselines |
 | `GET /score/charts` | `/score` as chart-ready series, plus rolling accuracy over time (same price fetch and append as `/score`) |
 | `GET /oauth/login`, `/oauth/callback`, `/oauth/me`, `POST /oauth/logout` | Google sign-in (code + PKCE), session cookie (`oauth/spec.md`) |
+| `POST /signup`, `POST /login` | Email/password accounts (`accounts.py`): create one; sign in and set the same session cookie (`oauth/spec.md`) |
 | `GET`, `PUT`, `DELETE /me/preferences` | The signed-in user's age band, strategy, experience level and up to 4 KB of UI settings; always needs sign-in |
 | `GET /paper/account` | Simulated account: cash, equity, P&L and each holding at its latest saved close (`paper/spec.md`) |
 | `GET /paper/orders?limit=50` | Simulated order history, newest first, with the forecast call each order came from |
@@ -134,9 +139,12 @@ and tell your coding agent to read this section:
   `API_CORS_ORIGINS` on the backend to change them. CORS allows credentials, so
   send `credentials: "include"` on requests that need the sign-in cookie. A
   Vite dev proxy (`/api` -> `http://localhost:8000`) also works and avoids CORS.
-- **Sign-in**: send the browser to `GET /oauth/login`; after Google it returns to
-  `OAUTH_POST_LOGIN_REDIRECT` (set it to the frontend's page). `GET /oauth/me`
-  returns the user or 401. Creating forecasts needs sign-in (send
+- **Sign-in**: email/password with `POST /signup` (`firstName`, `lastName`,
+  `email`, `password`) and `POST /login` (`email`, `password`), which sets the
+  session cookie (`frontend/src/lib/auth.js`); or send the browser to
+  `GET /oauth/login` for Google, which returns to `OAUTH_POST_LOGIN_REDIRECT`
+  (set it to the frontend's page). `GET /oauth/me` returns the user or 401;
+  `POST /oauth/logout` ends either kind of session. Creating forecasts needs sign-in (send
   `credentials: "include"`); on a 401, send the user to sign in. Reads don't.
   For local work without OAuth, the backend sets `API_REQUIRE_SIGN_IN=false`.
 - **Slow requests**: a forecast takes 10-60 s (more with modes). Prefer

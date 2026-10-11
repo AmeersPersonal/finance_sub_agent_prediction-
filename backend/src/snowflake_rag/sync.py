@@ -13,13 +13,14 @@ BATCH_SIZE = 200
 
 
 def sync(repo: Any, index: Any, *, batch_size: int = BATCH_SIZE,
-         max_batches: int | None = None) -> int:
-    """Sync until nothing is pending (or `max_batches`); returns chunk/ticker rows synced."""
+         max_batches: int | None = None, ticker: str | None = None) -> int:
+    """Sync until nothing is pending (or `max_batches`); returns chunk/ticker rows synced.
+    With `ticker`, only that ticker's chunks."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     synced = batches = 0
     while max_batches is None or batches < max_batches:
-        rows = repo.chunks_to_sync(index.embed_model, limit=batch_size)
+        rows = repo.chunks_to_sync(index.embed_model, limit=batch_size, ticker=ticker)
         if not rows:
             break
         index.upsert(rows)

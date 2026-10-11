@@ -5,9 +5,10 @@ name: backend
 
 on:
   push:
-    paths: ["backend/**", ".github/workflows/backend.yml"]
+    # assets.js: test_frontend_contract.py checks its ticker rule against the API's.
+    paths: ["backend/**", ".github/workflows/backend.yml", "frontend/src/features/market-dashboard/lib/assets.js"]
   pull_request:
-    paths: ["backend/**", ".github/workflows/backend.yml"]
+    paths: ["backend/**", ".github/workflows/backend.yml", "frontend/src/features/market-dashboard/lib/assets.js"]
 
 permissions:
   contents: read
@@ -19,8 +20,8 @@ jobs:
       run:
         working-directory: backend/src
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -42,8 +43,14 @@ jobs:
   image:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build the API image
         run: docker build -t finance-backend:ci backend
       - name: The API imports without the ml stack or any secrets
         run: docker run --rm finance-backend:ci python -c "import api.main"
+      - name: Build the AWS Lambda image
+        run: docker build -f backend/Dockerfile.lambda -t finance-lambda:ci backend
+      - name: The Lambda image imports the API and boto3, with the Web Adapter in place
+        run: >
+          docker run --rm finance-lambda:ci
+          python -c "import api.main, api.lambda_jobs, boto3, os; assert os.path.exists('/opt/extensions/lambda-adapter')"

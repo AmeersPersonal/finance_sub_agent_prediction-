@@ -1,15 +1,16 @@
 // Root component: owns app state (selected symbol, timeframe, news filter, preferences,
-// dev preview state, live feed) and lays out the dashboard panels.
+// dev preview state, data refreshes) and lays out the dashboard panels.
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import './styles/market-dashboard.css';
 import { strings } from './constants/strings.js';
 import { TIMEFRAMES, NEWS_FILTERS } from './constants/options.js';
-import { assets } from './data/mockData.js';
+import { assetFor, TICKER_PATTERN } from './lib/assets.js';
 import { loadPreferences, savePreferences, mockServerSync } from './lib/preferences.js';
-import { MockWebSocket } from './lib/MockWebSocket.js';
+import { refreshTicker } from './lib/api.js';
+import { biggestMoves } from './lib/moves.js';
 import { UIContext } from './context/UIContext.js';
-import { useQuote, useHistory, useNews, useForecast, useCalendar } from './hooks/useResource.js';
+import { useQuote, useHistory, useNews, useForecast, useForecastJob } from './hooks/useResource.js';
 
 import PanelBoundary from './components/ui/PanelBoundary.jsx';
 import SkipLinks from './components/layout/SkipLinks.jsx';
@@ -23,7 +24,7 @@ import StoryPanel from './components/panels/StoryPanel.jsx';
 import ChartPanel from './components/panels/ChartPanel.jsx';
 import WhyPanel from './components/panels/WhyPanel.jsx';
 import ForecastPanel from './components/panels/ForecastPanel.jsx';
-import CalendarPanel from './components/panels/CalendarPanel.jsx';
+import PersonasPanel from './components/panels/PersonasPanel.jsx';
 import NewsPanel from './components/panels/NewsPanel.jsx';
 import WatchlistPanel from './components/panels/WatchlistPanel.jsx';
 
@@ -36,7 +37,7 @@ function readUrlState(search) {
   const timeframe = params.get('timeframe');
   const news = params.get('news');
   return {
-    symbol: assets.some((a) => a.symbol === symbol) ? symbol : 'NVDA',
+    symbol: symbol && TICKER_PATTERN.test(symbol.toUpperCase()) ? symbol.toUpperCase() : 'NVDA',
     timeframe: TIMEFRAMES.includes(timeframe) ? timeframe : '1M',
     news: NEWS_FILTERS.includes(news) ? news : 'All',
   };
@@ -52,13 +53,16 @@ export default function MarketDashboard() {
   const [prefs, setPrefs] = useState(initialPrefs);
   const [tip, setTip] = useState(null);
   const [override, setOverride] = useState('normal');
-  const [connection, setConnection] = useState(strings.connected);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [announcement, announce] = useState('');
-  const feed = useRef(null);
+  // Bumped after a refresh or a finished forecast so every panel refetches.
+  const [reload, setReload] = useState(0);
+  const [refresh, setRefresh] = useState({ symbol: null, status: 'idle', error: null });
   const focusRestored = useRef(false);
+  // The dev preview control is for development builds, opened with ?dev.
+  const [showDev] = useState(() => import.meta.env.DEV && new URLSearchParams(location.search).has('dev'));
 
-  const asset = assets.find((a) => a.symbol === symbol);
+  const asset = assetFor(symbol);
 
   // Returning from Scenarios should land on the page heading, once.
   useEffect(() => {
@@ -66,14 +70,6 @@ export default function MarketDashboard() {
     focusRestored.current = true;
     document.getElementById('dashboard-title')?.focus();
   }, [location.state]);
-
-  // Start the mock live feed once.
-  useEffect(() => {
-    const ws = new MockWebSocket();
-    ws.onState = setConnection;
-    feed.current = ws;
-    return () => ws.stop();
-  }, []);
 
   // Persist preferences. The theme is applied on the dashboard wrapper below.
   useEffect(() => {
@@ -88,15 +84,10 @@ export default function MarketDashboard() {
     p.set('symbol', symbol);
     p.set('timeframe', tf);
     p.set('news', filter);
+    if (showDev) p.set('dev', '');
     const search = `?${p.toString()}`;
     if (search !== window.location.search) navigate({ search }, { replace: true });
-  }, [symbol, tf, filter, navigate]);
-
-  // Dev preview: simulate feed disconnect / reconnect.
-  useEffect(() => {
-    if (override === 'reconnecting') feed.current?.disconnect();
-    if (override === 'live_again') feed.current?.reconnect();
-  }, [override]);
+  }, [symbol, tf, filter, navigate, showDev]);
 
   const changeSymbol = useCallback((s) => { setSymbol(s); setSelectedEvent(null); }, []);
   const add = useCallback((s) => setPrefs((p) => (p.watchlist.some((w) => w.symbol === s)
@@ -104,11 +95,28 @@ export default function MarketDashboard() {
     : { ...p, watchlist: [...p.watchlist, { symbol: s, addedAt: new Date().toISOString() }] })), []);
   const remove = useCallback((s) => setPrefs((p) => ({ ...p, watchlist: p.watchlist.filter((w) => w.symbol !== s) })), []);
 
-  const quote = useQuote(symbol, override);
-  const historyResource = useHistory(symbol, tf, override);
-  const news = useNews(symbol, override);
-  const forecast = useForecast(symbol, override);
-  const calendar = useCalendar(symbol, override);
+  const quote = useQuote(symbol, override, reload);
+  const historyResource = useHistory(symbol, tf, override, reload);
+  const news = useNews(symbol, override, reload);
+  const forecast = useForecast(symbol, override, reload);
+  const prediction = forecast.data?.prediction || null;
+  const moves = useMemo(() => biggestMoves(historyResource.data, news.data), [historyResource.data, news.data]);
+  const intraday = tf === '1D' || tf === '1W';
+
+  const reloadAll = useCallback(() => setReload((n) => n + 1), []);
+  const job = useForecastJob(symbol, () => { reloadAll(); announce(`New forecast saved for ${symbol}.`); });
+
+  const runRefresh = useCallback(async () => {
+    setRefresh({ symbol, status: 'running', error: null });
+    try {
+      await refreshTicker(symbol);
+      setRefresh({ symbol, status: 'done', error: null });
+      reloadAll();
+    } catch (error) {
+      setRefresh({ symbol, status: 'failed', error: error.message });
+    }
+  }, [symbol, reloadAll]);
+  const refreshState = { ...(refresh.symbol === symbol ? refresh : { status: 'idle', error: null }), run: runRefresh };
 
   const context = useMemo(() => ({ tip, setTip, learning: prefs.learning, theme: prefs.theme }), [tip, prefs.learning, prefs.theme]);
 
@@ -119,46 +127,50 @@ export default function MarketDashboard() {
         <Header symbol={symbol} onSelect={changeSymbol} prefs={prefs} setPrefs={setPrefs} />
 
         <main className="w-full max-w-[1440px] mx-auto px-4 md:px-8 pb-12">
-          <Hero connection={connection} feed={feed} />
-          <MarketPulse override={override} />
+          <Hero symbol={symbol} quote={quote} refresh={refreshState} />
+          <MarketPulse override={override} reload={reload} />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-4">
             <PanelBoundary title={strings.story}>
-              <StoryPanel asset={asset} quote={quote} setSelectedEvent={setSelectedEvent} learning={prefs.learning} />
+              <StoryPanel
+                asset={asset} quote={quote} news={news} prediction={prediction} moves={moves}
+                setSelectedEvent={setSelectedEvent} learning={prefs.learning} onLoad={runRefresh}
+              />
             </PanelBoundary>
             <PanelBoundary title={strings.chart}>
               <ChartPanel
-                asset={asset} tf={tf} setTf={setTf} history={historyResource} quote={quote} forecast={forecast}
+                asset={asset} tf={tf} setTf={setTf} history={historyResource} quote={quote} prediction={prediction} moves={moves}
                 selectedEvent={selectedEvent} setSelectedEvent={setSelectedEvent} learning={prefs.learning} announce={announce}
+                onLoad={runRefresh}
               />
             </PanelBoundary>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 mb-4">
             <PanelBoundary title={strings.why}>
-              <WhyPanel asset={asset} history={historyResource} selectedEvent={selectedEvent} setSelectedEvent={setSelectedEvent} />
+              <WhyPanel history={historyResource} moves={moves} intraday={intraday} selectedEvent={selectedEvent} setSelectedEvent={setSelectedEvent} />
             </PanelBoundary>
             <PanelBoundary title={strings.forecast}>
-              <ForecastPanel state={forecast} learning={prefs.learning} />
+              <ForecastPanel state={forecast} job={job} learning={prefs.learning} />
             </PanelBoundary>
-            <PanelBoundary title={strings.calendar}>
-              <CalendarPanel state={calendar} />
+            <PanelBoundary title={strings.personas}>
+              <PersonasPanel state={forecast} />
             </PanelBoundary>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-8">
             <PanelBoundary title={strings.news}>
-              <NewsPanel state={news} asset={asset} filter={filter} setFilter={setFilter} />
+              <NewsPanel state={news} filter={filter} setFilter={setFilter} onLoad={runRefresh} />
             </PanelBoundary>
             <PanelBoundary title={strings.watchlist}>
-              <WatchlistPanel items={prefs.watchlist} add={add} remove={remove} />
+              <WatchlistPanel items={prefs.watchlist} add={add} remove={remove} onSelect={changeSymbol} reload={reload} />
             </PanelBoundary>
           </div>
 
-          <DevStateControls override={override} setOverride={setOverride} />
+          {showDev && <DevStateControls override={override} setOverride={setOverride} />}
           <AccessibilityNotes />
 
-          {/* Screen-reader announcements for chart navigation and "Read current price". */}
+          {/* Screen-reader announcements for chart navigation, "Read current price" and finished forecasts. */}
           <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
         </main>
 

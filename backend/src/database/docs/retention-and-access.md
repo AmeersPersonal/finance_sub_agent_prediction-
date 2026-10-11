@@ -18,6 +18,7 @@ team decides differently.
 | Snowflake index (optional) | Snowflake `RAG_CHUNKS`; `snowflake_synced_chunks` here | As long as `RAG_BACKEND=snowflake` is used | A derived copy of document chunks with embeddings, for ranking only. PostgreSQL stays the record: drop `RAG_CHUNKS` and delete the tracking rows to remove it, and `python -m snowflake_rag sync` rebuilds it. |
 | Sign-in state | `oauth_pending_logins`, `oauth_sessions` | 10 minutes / 8 hours, deleted after expiry | Hashes only; swept on the next write. |
 | Account preferences | `user_preferences` | Until the user deletes them (`DELETE /me/preferences`) or asks us to | Personal data: keep only while the user wants it. |
+| Email/password accounts | `user_accounts` | Until the user asks us to delete the account (no self-service route yet) | Personal data. Only a salted scrypt hash of the password is kept. |
 | JSONL log (CLI) | `backend/data/predictions.jsonl` | Forever; rotated by year past 100 MB | Same reason as forecasts. |
 | BLS cache | `backend/data/cache/` | 7 days | Re-fetchable. |
 
@@ -78,7 +79,7 @@ one person can reach. The local development cluster can keep its single owner.
 | --- | --- | --- | --- |
 | Owner (administrator) | Everything, including DDL | | `python -m database.migrate`, `roles.sql`, backups |
 | `finance_writer` / login `finance_api` | Read all tables; insert records; update `price_bars` and `user_preferences`; delete preferences and sign-in sessions | Change or delete forecasts, evidence or outcomes; alter the schema | The API and CLI (`DATABASE_URL`) |
-| `finance_reader` / login `finance_analyst` | Read forecasts, outcomes, prices and sources | Read sign-in state or preferences; write anything | Analysis, notebooks, dashboards |
+| `finance_reader` / login `finance_analyst` | Read forecasts, outcomes, prices and sources | Read sign-in state, accounts or preferences; write anything | Analysis, notebooks, dashboards |
 
 Rules:
 

@@ -4,16 +4,22 @@
    override them. Selectors use :where(.mmd) to keep their original specificity.
    Tailwind's global preflight is deliberately not imported. */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Handwriting font, the same one used on the sign-in, sign-up and landing pages */
+@import url('https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap');
 @import 'tailwindcss/theme.css' layer(theme);
 
 /* ---- Page frame (only while the dashboard is mounted) ---- */
-html:has(.mmd){font-size:16px;line-height:1.5;letter-spacing:normal;scroll-behavior:smooth;background:#F6F3EC;color-scheme:light}
-html:has(.mmd[data-theme=dark]){background:#14161A;color-scheme:dark}
+html:has(.mmd){font-size:16px;line-height:1.5;letter-spacing:normal;scroll-behavior:smooth;background:#E8F0F3;color-scheme:light}
+html:has(.mmd[data-theme=dark]){background:#151A20;color-scheme:dark}
 html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-inline:0}
 
 /* ---- Design tokens ---- */
-.mmd{color-scheme:light;--bg:#F6F3EC;--panel:#FFFFFF;--rule:#E4DED2;--ink:#1A1A1A;--ink2:#5B5750;--up:#0F7B6C;--down:#C2410C;--accent:#3B4BC8}
-.mmd[data-theme=dark]{color-scheme:dark;--bg:#14161A;--panel:#1C1F24;--rule:#2C3036;--ink:#EDEAE3;--ink2:#A8A39A;--up:#3CC2AE;--down:#F97350;--accent:#8B9BFF}
+/* --font-heading: the handwriting font used for headings. To go back, use: Fraunces,Georgia,serif */
+.mmd{--font-heading:'Gochi Hand','Comic Sans MS',cursive}
+/* Light mode palette, taken from the hand-drawn monitor scene. --btn-* is the yellow CONFIRM button. */
+.mmd{color-scheme:light;--bg:#E8F0F3;--panel:#FFFFFF;--rule:#D4DDE1;--ink:#2E2F2B;--ink2:#575F64;--up:#0F7B6C;--down:#C2410C;--accent:#4F7286;--btn-bg:#F4E48C;--btn-ink:#2E2F2B;--btn-border:#2E2F2B}
+/* Dark mode: the light palette with its hue turned ~10deg clockwise and saturation lowered slightly. */
+.mmd[data-theme=dark]{color-scheme:dark;--bg:#151A20;--panel:#1D252D;--rule:#343F4B;--ink:#E5EBF0;--ink2:#AAB9C5;--up:#3CC2AE;--down:#F97350;--accent:#95A7BB;--btn-bg:#EAEB8E;--btn-ink:#151A20;--btn-border:#EAEB8E}
 
 /* ---- Scoped reset (the parts of Tailwind's preflight the dashboard relies on) ---- */
 :where(.mmd),:where(.mmd) *,:where(.mmd) ::before,:where(.mmd) ::after{box-sizing:border-box;border:0 solid var(--rule)}
@@ -42,7 +48,7 @@ html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-
 :where(.mmd) .skip:focus{top:8px}
 
 /* ---- Typography & color helpers ---- */
-:where(.mmd) .serif{font-family:Fraunces,Georgia,serif}
+:where(.mmd) .serif{font-family:var(--font-heading);font-synthesis:none;letter-spacing:.01em}
 :where(.mmd) .mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
 :where(.mmd) .muted{color:var(--ink2)}
 :where(.mmd) .accent{color:var(--accent)}
@@ -54,11 +60,11 @@ html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-
 
 /* ---- Panels & controls ---- */
 :where(.mmd) .panel{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:24px;min-width:0}
-:where(.mmd) .panel h2{font-family:Fraunces,Georgia,serif;font-size:1.4rem;line-height:1.2;margin:0 0 16px}
+:where(.mmd) .panel h2{font-family:var(--font-heading);font-synthesis:none;letter-spacing:.01em;font-size:1.4rem;line-height:1.2;margin:0 0 16px}
 :where(.mmd) .action{border:1px solid var(--rule);border-radius:7px;background:var(--panel);color:var(--ink);padding:7px 11px;min-height:36px}
 :where(.mmd) .action:hover,:where(.mmd) .action[aria-selected=true]{border-color:var(--accent);color:var(--accent)}
-:where(.mmd) .primary{background:var(--accent);border-color:var(--accent);color:#fff}
-:where(.mmd[data-theme=dark]) .primary{color:#14161A}
+:where(.mmd) .primary{background:var(--btn-bg);border-color:var(--btn-border);color:var(--btn-ink)}
+:where(.mmd[data-theme=dark]) .primary{color:var(--btn-ink)}
 :where(.mmd) .tag{display:inline-block;border:1px solid var(--rule);border-radius:4px;padding:2px 6px;font-size:.7rem;white-space:nowrap}
 :where(.mmd) .line-row{border-top:1px solid var(--rule);padding:12px 0}
 :where(.mmd) .menu{position:absolute;right:0;top:calc(100% + 8px);z-index:25;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:8px;min-width:190px}
@@ -81,5 +87,16 @@ html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-
 /* ---- Motion & responsive ---- */
 @media(prefers-reduced-motion:reduce){:where(.mmd),:where(.mmd) *,:where(.mmd) *::before,:where(.mmd) *::after{animation:none!important;scroll-behavior:auto!important;transition:none!important}html:has(.mmd){scroll-behavior:auto}}
 @media(max-width:700px){:where(.mmd) .panel{padding:16px}:where(.mmd) .plot{height:220px}:where(.mmd) .mobile-stack{flex-wrap:wrap}:where(.mmd) .virtual-scroll{height:290px}}
+
+/* ---- Light mode top bar: dark gray like the wall behind the monitor ----
+   Targets the top bar automatically: the <header> that holds the search box.
+   (Adding className="mmd-topbar" to the bar in the JSX also works.)
+   Inside the bar, the page colors are swapped for header colors, so the
+   title, search box, buttons and checkbox all switch automatically. */
+.mmd:not([data-theme=dark]) :is(.mmd-topbar,header:has(input)){--bg:#404040;--panel:#4A4A4A;--rule:#5A5A5A;--ink:#EDE3BD;--ink2:#C9C2A0;--accent:#F4E48C;background:#404040;color:var(--ink);border-color:var(--rule);accent-color:#F4E48C}
+.mmd:not([data-theme=dark]) :is(.mmd-topbar,header:has(input)) :is(input,button,a,span,p,h1,label){color:var(--ink);border-color:var(--rule)}
+.mmd:not([data-theme=dark]) :is(.mmd-topbar,header:has(input)) :is(input,button){background-color:var(--panel)}
+.mmd[data-theme=dark] :is(.mmd-topbar,header:has(input)){--panel:#1A2128;--ink:#EBEAC6;--ink2:#C0C09A;--accent:#EAEB8E;background:#0F1317;color:var(--ink);accent-color:#EAEB8E}
+.mmd[data-theme=dark] :is(.mmd-topbar,header:has(input)) input{background-color:var(--panel);color:var(--ink)}
 
 @tailwind utilities;

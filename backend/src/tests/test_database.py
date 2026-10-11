@@ -28,7 +28,9 @@ CORE_MIGRATIONS = [
     "006_snowflake_sync.sql",
     "007_oauth_sessions.sql",
     "008_price_bar_revisions.sql",
-    "009_paper_trading.sql",
+    "009_user_accounts.sql",
+    "010_prediction_jobs.sql",
+    "011_paper_trading.sql",
 ]
 
 
@@ -371,6 +373,23 @@ def test_snowflake_sync_tracking_is_per_chunk_ticker_and_model(db):
     assert repo.mark_chunks_synced(pending[:1], "model-a") == 0
     assert len(repo.chunks_to_sync("model-a")) == 1
     assert len(repo.chunks_to_sync("model-b")) == 2  # a new embedding model re-syncs everything
+    assert [r["ticker"] for r in repo.chunks_to_sync("model-b", ticker="PEER")] == ["PEER"]
+    assert repo.mark_chunks_synced([], "model-a") == 0
+
+
+def test_accounts_are_unique_by_email_and_store_only_hashes(db):
+    from oauth.passwords import hash_password
+    repo = DatabaseRepository(db)
+    hashed = hash_password("correct horse")
+    first = repo.create_account(email=" Maya@Example.com ", password_hash=hashed, first_name=" Maya ", last_name="Lopez")
+    assert isinstance(first, int)
+    assert repo.create_account(email="maya@example.com", password_hash=hashed, first_name="M", last_name="L") is None
+    account = repo.get_account("MAYA@example.com")
+    assert account == {"id": first, "email": "maya@example.com", "password_hash": hashed,
+                       "first_name": "Maya", "last_name": "Lopez"}
+    assert repo.get_account("nobody@example.com") is None
+    with pytest.raises(DatabaseError):  # the CHECK rejects anything but a scrypt hash
+        repo.create_account(email="x@example.com", password_hash="correct horse", first_name="X", last_name="Y")
 
 
 def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):
@@ -540,6 +559,34 @@ def test_shared_session_store_round_trip_and_expiry(db):
     assert db.execute("SELECT count(*) AS n FROM oauth_sessions").fetchone()["n"] == 1
 
 
+def test_durable_job_store_round_trip_claim_and_expiry(db):
+    from contextlib import contextmanager
+
+    from api.lambda_jobs import JOB_TTL, STALE_AFTER, DatabaseJobStore
+
+    @contextmanager
+    def same_connection():
+        yield db
+
+    now, sent = [datetime(2026, 10, 9, 12, tzinfo=timezone.utc)], []
+    store = DatabaseJobStore(same_connection, sent.append, "k" * 32, clock=lambda: now[0])
+    queued = store.submit("user:1", {"ticker": "AAPL"})
+    event = sent[0]
+    assert queued["status"] == "queued" and event["job_id"] == queued["job_id"] and store.verify(event)
+    assert store.get(queued["job_id"], "user:2") is None  # only its creator
+    assert store.claim(event["job_id"]) and not store.claim(event["job_id"])  # a replay is a no-op
+    store.finish(event["job_id"], result={"id": "p-1", "ticker": "AAPL"})
+    done = store.get(event["job_id"], "user:1")
+    assert done["status"] == "succeeded" and done["prediction_id"] == "p-1" and done["error"] is None
+    # A worker that died mid-run reads as failed; finished rows are swept an hour later.
+    stuck = store.submit("user:1", {"ticker": "MSFT"})["job_id"]
+    now[0] += STALE_AFTER + timedelta(seconds=1)
+    assert store.get(stuck, "user:1")["status"] == "failed"
+    now[0] += JOB_TTL
+    store.submit("user:1", {"ticker": "NVDA"})
+    assert db.execute("SELECT count(*) AS n FROM prediction_jobs WHERE id = %s", (event["job_id"],)).fetchone()["n"] == 0
+
+
 def test_user_preferences_upsert_and_delete(db):
     repo = DatabaseRepository(db)
     account = "idp.example:user-1"
@@ -555,6 +602,27 @@ def test_user_preferences_upsert_and_delete(db):
         repo.save_user_preferences(account, age_band="16-17", strategy=None,
                                    experience_level=None, preferences={})
     assert repo.delete_user_preferences(account) and not repo.delete_user_preferences(account)
+
+
+def test_price_noise_is_not_a_correction_but_real_changes_are(db):
+    repo = DatabaseRepository(db)
+    at = datetime(2026, 10, 1, 4, tzinfo=timezone.utc)
+    first = {"bar_at": at, "open": 229.8, "high": 231.0, "low": 228.5, "close": 230.12345, "volume": 1000, "fetched_at": at}
+    later = lambda **change: {**first, "fetched_at": at + timedelta(days=1), **change}  # noqa: E731
+    save = lambda bar: repo.save_price_bars("TEST", [bar], interval="1d", adjustment_basis="total_return")  # noqa: E731
+    revisions = lambda: db.execute("SELECT count(*) AS n FROM price_bar_revisions").fetchone()["n"]  # noqa: E731
+    assert save(first) == 1
+    # Yahoo's float jitter (5e-7 relative, the largest seen) on every price: unchanged, nothing archived.
+    jitter = 1 + 5.2e-7
+    assert save(later(open=229.8 * jitter, high=231.0 / jitter, low=228.5 * jitter, close=230.12345 * jitter)) == 0
+    assert revisions() == 0
+    assert float(repo.get_price_history("TEST")[0]["close"]) == 230.12345  # the first value is kept
+    # A small dividend re-adjustment (0.08%), a volume change and a newly known open are real.
+    assert save(later(close=230.12345 * 0.9992)) == 1
+    assert save(later(close=230.12345 * 0.9992, volume=1200, fetched_at=at + timedelta(days=2))) == 1
+    assert save({**first, "open": None, "fetched_at": at + timedelta(days=3)}) == 1
+    assert save({**first, "fetched_at": at + timedelta(days=4)}) == 1  # the open comes back
+    assert revisions() == 4
 
 
 def test_price_corrections_are_archived_and_replayable(db):

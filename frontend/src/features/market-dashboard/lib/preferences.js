@@ -13,7 +13,7 @@ export function loadPreferences() {
   const learning = typeof stored.learning === 'boolean' ? stored.learning : sessions <= 5;
   const watchlist = Array.isArray(stored.watchlist)
     ? stored.watchlist
-    : ['NVDA', 'AAPL', 'VOO', 'BTC', 'OTLK'].map((symbol) => ({ symbol, addedAt: '2026-10-10T00:00:00Z' }));
+    : ['NVDA', 'AAPL', 'MSFT', 'SPY'].map((symbol) => ({ symbol, addedAt: '2026-10-10T00:00:00Z' }));
   const result = { theme, learning, watchlist, sessions };
   savePreferences(result);
   return result;

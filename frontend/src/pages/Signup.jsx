@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { MIN_PASSWORD, signUp } from '../lib/auth'
 import monitor from '../assets/signin2-blank.png'
 import '../SignupMonitor.css'
 
@@ -48,6 +49,10 @@ export default function SignupMonitor() {
       setError('Please fill in every box')
       return
     }
+    if (values.password.length < MIN_PASSWORD) {
+      setError(`Password must be at least ${MIN_PASSWORD} characters`)
+      return
+    }
     if (values.password !== values.confirm) {
       setError("Passwords don't match")
       return
@@ -55,18 +60,7 @@ export default function SignupMonitor() {
 
     setLoading(true)
     try {
-      // Placeholder endpoint: confirm with your backend teammates
-      const res = await fetch('/api/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firstName: values.firstName,
-          lastName: values.lastName,
-          email: values.email,
-          password: values.password,
-        }),
-      })
-      if (!res.ok) throw new Error('Could not create your account')
+      await signUp(values)
       navigate('/signin')
     } catch (err) {
       setError(err.message)
@@ -78,8 +72,8 @@ export default function SignupMonitor() {
   return (
     <div className="signup-page">
       <header className="signup-header">
-        <Link to="/" className="logo">MyAPP</Link>
-        <p>Already have an account? <Link to="/signin">Sign in</Link></p>
+        <Link to="/" className="logo">Market Moves</Link>
+        <p> <Link to="/signin"> Already have an account? Sign in</Link></p>
       </header>
 
       {/* The drawing, with the labels, boxes and button placed on top of it */}

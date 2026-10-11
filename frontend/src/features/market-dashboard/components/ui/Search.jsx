@@ -1,8 +1,8 @@
 // Ticker search combobox (ARIA combobox + listbox with active descendant).
+// Lists known assets; any other valid ticker can be looked up as typed.
 import { useState, useMemo, useRef } from 'react';
 import { strings } from '../../constants/strings.js';
-import { assets, base } from '../../data/mockData.js';
-import { percent, signed } from '../../lib/format.js';
+import { assets, TICKER_PATTERN } from '../../lib/assets.js';
 
 export default function Search({ symbol, onSelect }) {
   const [query, setQuery] = useState('');
@@ -11,8 +11,13 @@ export default function Search({ symbol, onSelect }) {
   const input = useRef(null);
 
   const matches = useMemo(() => {
-    const q = query.toLowerCase();
-    return assets.filter((a) => a.name.toLowerCase().includes(q) || a.symbol.toLowerCase().includes(q)).slice(0, 8);
+    const q = query.trim().toLowerCase();
+    const found = assets.filter((a) => a.name.toLowerCase().includes(q) || a.symbol.toLowerCase().includes(q)).slice(0, 8);
+    const typed = q.toUpperCase();
+    if (TICKER_PATTERN.test(typed) && !found.some((a) => a.symbol === typed)) {
+      found.push({ symbol: typed, name: `${strings.useTicker} ${typed}`, type: 'Ticker', custom: true });
+    }
+    return found;
   }, [query]);
 
   function choose(a) {
@@ -71,7 +76,7 @@ export default function Search({ symbol, onSelect }) {
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => choose(a)}
             >
-              {a.name} · {a.symbol} <span className="tag">{a.type}</span> · {signed(percent(base[a.symbol][0], base[a.symbol][1]))}
+              {a.custom ? a.name : <>{a.name} · {a.symbol} <span className="tag">{a.type}</span></>}
             </button>
           ))}
         </div>

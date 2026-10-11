@@ -40,11 +40,11 @@ def repository(monkeypatch):
         def retrieve_passages(self, ticker, query, **kwargs):
             state.retrievals.append((ticker, query, kwargs))
             return state.passages
-        def chunks_to_sync(self, embedding_model, *, limit):
-            return state.unsynced[:limit]
+        def chunks_to_sync(self, embedding_model, *, limit, ticker=None):
+            return [r for r in state.unsynced if ticker in (None, r.get('ticker'))][:limit]
         def mark_chunks_synced(self, rows, embedding_model):
             state.events.append(('synced', [r['chunk_id'] for r in rows]))
-            state.unsynced = state.unsynced[len(rows):]
+            state.unsynced = [r for r in state.unsynced if r not in rows]
         def passages_by_chunk_ids(self, ticker, chunk_ids, **kwargs):
             state.events.append('reloaded_from_postgres')
             return [p for p in state.passages if p['chunk_id'] in chunk_ids]
@@ -292,17 +292,18 @@ def test_snowflake_outage_falls_back_to_keyword_search_with_one_warning(reposito
 
 def test_new_chunks_are_indexed_before_the_search(repository, snowflake):
     repository.passages = [_evidence(11, 1, 0.3), _evidence(12, 2, 0.2)]
-    repository.unsynced = [{'chunk_id': 12, 'instrument_id': 1}]
+    other = {'chunk_id': 99, 'instrument_id': 2, 'ticker': 'PEER'}
+    repository.unsynced = [{'chunk_id': 12, 'instrument_id': 1, 'ticker': 'TEST'}, other]
     cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
     _, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
     assert warnings == [] and snowflake.upserts == [[12]]
     assert repository.events.index(('synced', [12])) < repository.events.index('reloaded_from_postgres')
-    assert repository.unsynced == []
+    assert repository.unsynced == [other]  # other tickers' backlog is left to the sync CLI
 
 
 def test_failed_index_sync_falls_back_to_keyword_search(repository, snowflake):
     repository.passages = [_evidence(11, 1, 0.3)]
-    repository.unsynced = [{'chunk_id': 11, 'instrument_id': 1}]
+    repository.unsynced = [{'chunk_id': 11, 'instrument_id': 1, 'ticker': 'TEST'}]
     snowflake.fail_upsert = True
     cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
     passages, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
