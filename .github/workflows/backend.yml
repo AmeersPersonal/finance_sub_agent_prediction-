@@ -5,9 +5,10 @@ name: backend
 
 on:
   push:
-    paths: ["backend/**", ".github/workflows/backend.yml"]
+    # assets.js: test_frontend_contract.py checks its ticker rule against the API's.
+    paths: ["backend/**", ".github/workflows/backend.yml", "frontend/src/features/market-dashboard/lib/assets.js"]
   pull_request:
-    paths: ["backend/**", ".github/workflows/backend.yml"]
+    paths: ["backend/**", ".github/workflows/backend.yml", "frontend/src/features/market-dashboard/lib/assets.js"]
 
 permissions:
   contents: read
