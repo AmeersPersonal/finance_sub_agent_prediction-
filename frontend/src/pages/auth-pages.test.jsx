@@ -1,11 +1,15 @@
 // The sign-in and sign-up pages against a fake backend.
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 import Signin from './Signin.jsx';
 import Signup from './Signup.jsx';
 import { installFakeBackend, json } from '../test/fakeBackend.js';
+
+function Location() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
 
 function renderAt(path) {
   return render(
@@ -15,6 +19,7 @@ function renderAt(path) {
         <Route path="/signup" element={<Signup />} />
         <Route path="/dashboard" element={<p>Dashboard page</p>} />
       </Routes>
+      <Location />
     </MemoryRouter>,
   );
 }
@@ -77,7 +82,9 @@ describe('sign-up page', () => {
   it('creates the account with the fields the backend expects, then asks to sign in', async () => {
     backend.respond = (method, path) => (path === '/signup' ? json({ user: {} }, 201) : null);
     await fill();
-    expect(await screen.findByLabelText('PASSWORD')).toHaveAttribute('autocomplete', 'current-password'); // the sign-in page
+    // Wait for the move to the sign-in page itself; its fields can't be told apart from sign-up's mid-render.
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/signin'));
+    expect(screen.queryByLabelText('CONFIRM PASSWORD')).not.toBeInTheDocument();
     expect(backend.calls[0]).toMatchObject({
       method: 'POST', path: '/signup',
       body: { firstName: 'Maya', lastName: 'Lopez', email: 'maya@example.com', password: 'correct horse' },
