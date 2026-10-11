@@ -48,3 +48,9 @@ jobs:
         run: docker build -t finance-backend:ci backend
       - name: The API imports without the ml stack or any secrets
         run: docker run --rm finance-backend:ci python -c "import api.main"
+      - name: Build the AWS Lambda image
+        run: docker build -f backend/Dockerfile.lambda -t finance-lambda:ci backend
+      - name: The Lambda image imports the API and boto3, with the Web Adapter in place
+        run: >
+          docker run --rm finance-lambda:ci
+          python -c "import api.main, api.lambda_jobs, boto3, os; assert os.path.exists('/opt/extensions/lambda-adapter')"

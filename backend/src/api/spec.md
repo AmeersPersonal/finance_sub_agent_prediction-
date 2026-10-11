@@ -7,7 +7,8 @@
 - [x] Background forecasts: `POST /prediction-jobs` returns a job id at once; poll `GET /prediction-jobs/{job_id}`. `POST /predictions` still holds the request open.
 - [x] `GET /score` and `/score/charts` share a cached report (`API_SCORE_CACHE_SECONDS`, default 300); `?refresh=true` recomputes, and `POST /predictions/{id}/evaluate` clears it.
 - [x] Account preferences behind sign-in: `GET`, `PUT` and `DELETE /me/preferences`, keyed by the provider's subject id.
-- [ ] Rate limits, jobs and the score cache are per process (`state.py`), so the API runs as one worker. Move them to PostgreSQL before running several workers; sign-in sessions already can be (`OAUTH_SESSION_STORE=database`).
+- [x] AWS Lambda hosting: with `JOBS_BACKEND=lambda`, prediction jobs live in `prediction_jobs` (migration 010) and run in a second, signed invocation (`lambda_jobs.py`, `POST /internal/lambda-events`). Deployment: `deploy/aws/README.md`.
+- [ ] Rate limits, jobs and the score cache are per process (`state.py`), so the API runs as one worker (on Lambda the rate limit and score cache are per instance). Move them to PostgreSQL before running several workers; sign-in sessions already can be (`OAUTH_SESSION_STORE=database`).
 
 ## Purpose
 
@@ -31,6 +32,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | --- | --- |
 | `main.py` | The FastAPI app: routes, request models, sign-in and quota checks |
 | `state.py` | In-process state: the per-caller rate limiter, background prediction jobs, the score cache |
+| `lambda_jobs.py` | `JOBS_BACKEND=lambda`: PostgreSQL-backed prediction jobs, HMAC-signed worker events (`JOB_SIGNING_KEY`), async self-invoke with boto3 (Lambda image only) |
 | `accounts.py` | `POST /signup`, `POST /login`: email/password accounts (`user_accounts`), hashed with `oauth/passwords.py`, signed in with the same session as Google |
 
 ## Routes
@@ -44,6 +46,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | `POST /predictions` | Generate and store a forecast (options below). Signed-in, rate-limited |
 | `POST /prediction-jobs` | The same, in the background: 202 with `job_id` and `poll` |
 | `GET /prediction-jobs/{job_id}` | `status` queued, running, succeeded (with `prediction`) or failed (with `error`); the creator only, kept an hour |
+| `POST /internal/lambda-events` | Not for clients, hidden from `/docs`: the Lambda worker for `JOBS_BACKEND=lambda`; 403 unless the event carries a valid signature |
 | `GET /predictions?ticker=AAPL&limit=20` | Most recent saved forecasts |
 | `GET /predictions/{id}` | One saved forecast |
 | `GET /predictions/{id}/evaluation` | Saved evaluations, or `"status": "pending"` (no price fetch) |

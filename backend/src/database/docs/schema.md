@@ -20,6 +20,10 @@ connect them. A table contains records, like rows in a spreadsheet.
 | `user_preferences` | A user's selected strategy, age band, experience, and preferences. No account passwords. |
 | `user_accounts` | Email/password sign-in accounts: email, first and last name, and a one-way hash of the password (never the password itself). |
 
+`prediction_jobs` holds short-lived background forecast jobs when the API runs on AWS
+Lambda (`JOBS_BACKEND=lambda`): who started one, its status and the finished forecast.
+Rows are deleted an hour after they finish; the forecast itself lives in `predictions`.
+
 `schema_migrations` is an additional bookkeeping table recording which schema
 updates have already been applied, with checksums to detect changed migration files.
 

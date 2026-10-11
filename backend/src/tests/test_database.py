@@ -29,6 +29,7 @@ CORE_MIGRATIONS = [
     "007_oauth_sessions.sql",
     "008_price_bar_revisions.sql",
     "009_user_accounts.sql",
+    "010_prediction_jobs.sql",
 ]
 
 
@@ -555,6 +556,34 @@ def test_shared_session_store_round_trip_and_expiry(db):
     assert store.finish_login(late_state) is None and store.get_session(session) is None
     store.create_session({"sub": "user-3"})
     assert db.execute("SELECT count(*) AS n FROM oauth_sessions").fetchone()["n"] == 1
+
+
+def test_durable_job_store_round_trip_claim_and_expiry(db):
+    from contextlib import contextmanager
+
+    from api.lambda_jobs import JOB_TTL, STALE_AFTER, DatabaseJobStore
+
+    @contextmanager
+    def same_connection():
+        yield db
+
+    now, sent = [datetime(2026, 10, 9, 12, tzinfo=timezone.utc)], []
+    store = DatabaseJobStore(same_connection, sent.append, "k" * 32, clock=lambda: now[0])
+    queued = store.submit("user:1", {"ticker": "AAPL"})
+    event = sent[0]
+    assert queued["status"] == "queued" and event["job_id"] == queued["job_id"] and store.verify(event)
+    assert store.get(queued["job_id"], "user:2") is None  # only its creator
+    assert store.claim(event["job_id"]) and not store.claim(event["job_id"])  # a replay is a no-op
+    store.finish(event["job_id"], result={"id": "p-1", "ticker": "AAPL"})
+    done = store.get(event["job_id"], "user:1")
+    assert done["status"] == "succeeded" and done["prediction_id"] == "p-1" and done["error"] is None
+    # A worker that died mid-run reads as failed; finished rows are swept an hour later.
+    stuck = store.submit("user:1", {"ticker": "MSFT"})["job_id"]
+    now[0] += STALE_AFTER + timedelta(seconds=1)
+    assert store.get(stuck, "user:1")["status"] == "failed"
+    now[0] += JOB_TTL
+    store.submit("user:1", {"ticker": "NVDA"})
+    assert db.execute("SELECT count(*) AS n FROM prediction_jobs WHERE id = %s", (event["job_id"],)).fetchone()["n"] == 0
 
 
 def test_user_preferences_upsert_and_delete(db):

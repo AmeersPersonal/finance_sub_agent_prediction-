@@ -22,5 +22,6 @@ src/tests/
 **/.coverage
 **/htmlcov/
 Dockerfile
+Dockerfile.lambda
 docker-compose.yml
 .dockerignore

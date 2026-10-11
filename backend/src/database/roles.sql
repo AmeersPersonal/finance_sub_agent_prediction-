@@ -38,9 +38,10 @@ GRANT USAGE ON SCHEMA :"schema" TO finance_writer, finance_reader;
 -- archived by trigger, which inserts into price_bar_revisions); preferences and
 -- sign-in sessions are the only rows it deletes.
 GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA :"schema" TO finance_writer;
-GRANT UPDATE ON :"schema".price_bars, :"schema".user_preferences TO finance_writer;
+GRANT UPDATE ON :"schema".price_bars, :"schema".user_preferences,
+    :"schema".prediction_jobs TO finance_writer;
 GRANT DELETE ON :"schema".user_preferences, :"schema".oauth_pending_logins,
-    :"schema".oauth_sessions TO finance_writer;
+    :"schema".oauth_sessions, :"schema".prediction_jobs TO finance_writer;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA :"schema" TO finance_writer;
 REVOKE INSERT ON :"schema".schema_migrations FROM finance_writer;
 
@@ -48,7 +49,8 @@ REVOKE INSERT ON :"schema".schema_migrations FROM finance_writer;
 -- sign-in state or anyone's preferences.
 GRANT SELECT ON ALL TABLES IN SCHEMA :"schema" TO finance_reader;
 REVOKE SELECT ON :"schema".oauth_pending_logins, :"schema".oauth_sessions,
-    :"schema".user_preferences, :"schema".user_accounts FROM finance_reader;
+    :"schema".user_preferences, :"schema".user_accounts,
+    :"schema".prediction_jobs FROM finance_reader;
 
 -- Login roles. Re-running sets (rotates) their passwords.
 SELECT 'CREATE ROLE finance_api LOGIN IN ROLE finance_writer'
