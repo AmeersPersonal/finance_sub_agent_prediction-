@@ -25,7 +25,8 @@ scoring the results later.
 
 | File | Role |
 |---|---|
-| `main.py` | `predict()`: fetch -> optional live quote -> sentiment -> personas in parallel (optionally under several reasoning modes) -> aggregate -> `Prediction`. `llm=`, `snapshot=`, `live_feed=`, `documents_by_strategy=` (retrieved passages) and `regression_daily=` (the frozen database dataset) are injectable |
+| `main.py` | `predict()`: fetch -> optional live quote -> sentiment -> personas in parallel (optionally under several reasoning modes) -> aggregate -> `Prediction` -> optional call policy. `llm=`, `snapshot=`, `live_feed=`, `documents_by_strategy=` (retrieved passages) and `regression_daily=` (the frozen database dataset) are injectable; `policy=` and `price_signal=` (model A, logged only) are opt-in |
+| `policy.py` | `CallPolicy` from `data/call_policy.json` (fitted by `python -m ml coverage --save`): `apply_policy` withholds a call below the horizon's fitted strength (`Prediction.withheld_call`, shown as unclear) and adds `Prediction.p_correct`. Only parts that passed their held-out check are applied |
 | `tool.py` | Parallel yfinance fetching into `MarketSnapshot` (prices, annual and quarterly statements, Street data, options, news with links, macro). `fetch_daily` and `clean_daily` (fills Yahoo's unfinalised last bar from the quote). Failures go to `snapshot.errors`, not exceptions |
 | `live.py` | `LiveFeed` protocol, `YahooLiveFeed` (first websocket tick), `FinnhubLiveFeed` (keyed quote), `live_feed_from_env` (`LIVE_FEED`), `apply_live_quote` (falls back to the REST price with a warning) |
 | `feeds.py` | Yahoo Finance RSS news (`NewsItem`: title, link, date, summary) and BLS inflation/jobs (cached daily in `data/cache/`, pruned after 7 days) |
@@ -38,7 +39,7 @@ scoring the results later.
 | `evaluation.py` | Baselines (always-up, momentum, regression), prediction log (rotated by year), scorer (split-aware; relative to SPY; by strength and stability), derived strategy weights |
 | `rag_retrieval.py` | Keyword retrieval over `docs/` (.md / .txt) and age-profile overrides |
 | `features.py` | `extract_features`: flattens the strategy packets, regression output and sentiment into one numeric row (`Prediction.features`), logged for the stacker in `ml/` |
-| `schemas.py` | `PersonaView` (with validated citation IDs), `PersonaResult`, `Prediction` (pydantic; `quote_source`, `features`, `audit`, sources, frozen packets and learning context are optional so old log lines load) |
+| `schemas.py` | `PersonaView` (with validated citation IDs), `PersonaResult`, `Prediction` (pydantic; `quote_source`, `features`, `withheld_call`, `p_correct`, `price_model`, `audit`, sources, frozen packets and learning context are optional so old log lines load; new fields must default to None, see `database.repository.same_forecast`) |
 | `docs/` | Private source documents; contents gitignored, only `.gitkeep` tracked |
 
 ## Design rules
@@ -54,6 +55,10 @@ scoring the results later.
 - Reasoning modes are collapsed per persona before that, so extra samples never add weight.
 - `default` mode equals the pre-modes behaviour; keep it logged as the control.
 - "flat" (expect price inside the band) is not "unclear" (personas split).
+  Telling personas not to use flat as a way to pass backfired (version 7):
+  unclear is always a miss, so removing flat votes costs accuracy.
+- The call policy never changes the personas, the vote or `net_score`; a
+  withheld call is kept in `withheld_call` so the policy can be refitted.
 - Bump `PROMPT_VERSION` whenever prompts or packets change, and say what changed
   in `PROMPT_CHANGELOG`.
 - Only score live-logged predictions; replaying history overstates accuracy.
@@ -68,5 +73,13 @@ database branch numbered its own changes 4-6 (4: supplied online passages with
 coverage labels and source IDs; 5: role labels and role mixing; 6: Hacker News
 threads). Those numbers collided with the backend branch's 4 and 5, so after
 the merge all of them together are version 6.
+
+Version 7 added `horizon.past_outcomes_2y` (`finance.indicators.outcome_base_rates`)
+and told personas that missing data or a horizon outside their style lowers
+conviction instead of turning the vote flat; `python -m ml bias` showed
+long_term voting flat 73% of the time on the replay. On the prices-only replay
+(`ml/spec.md`) it scored 6.2 points below version 6 at 1 day: with no flat
+votes a split panel fell through to unclear, which always counts as a miss.
+Version 8 keeps the base rates and takes the system-prompt additions back.
 
 For database-backed forecasts, `regression_daily` is the frozen `model_datasets` copy of the same daily snapshot the personas saw (`database.datasets`). Direct `predict()` calls still default to `snapshot.daily`. News and persona opinions are not regression features.

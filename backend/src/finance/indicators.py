@@ -52,6 +52,24 @@ def classify_move(ret: float, band: float) -> str:
     return "up" if ret > band else "down" if ret < -band else "flat"
 
 
+def outcome_base_rates(
+    close: pd.Series, horizon_days: int, lookback: int = 2 * TRADING_DAYS
+) -> dict[str, float | int]:
+    """How often past `horizon_days` windows ended up, flat or down, each judged
+    with the band known at its start, over the last `lookback` complete windows.
+    Overlapping windows, so `windows` overstates the independent samples."""
+    ret = close.shift(-horizon_days) / close - 1
+    band = flat_band_series(close, horizon_days)
+    known = pd.concat([ret, band], axis=1).dropna().iloc[-lookback:]
+    if len(known) < 21:
+        raise ValueError("Not enough price history for outcome base rates")
+    moves = [classify_move(r, b) for r, b in known.itertuples(index=False)]
+    return {
+        **{d: moves.count(d) / len(moves) for d in ("up", "flat", "down")},
+        "windows": len(moves),
+    }
+
+
 def sma(close: pd.Series, window: int) -> float:
     if len(close) < window:
         raise ValueError(f"need {window} bars, have {len(close)}")

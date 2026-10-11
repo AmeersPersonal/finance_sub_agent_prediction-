@@ -19,7 +19,7 @@ return numbers or small dicts, returning `None` when data is missing.
 
 | File | Role |
 |---|---|
-| `indicators.py` | RSI, MACD (last bar and `macd_series`), ATR, VWAP (session value and `vwap_series`), volume profile (`volume_by_price` for the buckets), beta, relative strength, options sentiment, max drawdown, and the flat band |
+| `indicators.py` | RSI, MACD (last bar and `macd_series`), ATR, VWAP (session value and `vwap_series`), volume profile (`volume_by_price` for the buckets), beta, relative strength, options sentiment, max drawdown, the flat band, and `outcome_base_rates` (share of past windows that ended up / flat / down, each with its point-in-time band) |
 | `linear_regression.py` | OLS on price features, walk-forward validated; the baseline the personas are scored against. `period_returns` gives the per-period returns behind its strategy / buy-and-hold summaries. `FEATURE_FUNCTIONS` registry; `FEATURES` is the kept set, `CANDIDATE_FEATURES` were tried and not kept |
 | `backtest.py` | Strategy returns with costs; Sharpe, Sortino, max drawdown (of the equity curve), profit factor |
 | `fundamentals.py` | Margins, FCF, ROIC, leverage, valuation; Beneish M-score; shared `value` / `ttm` / `ratio` helpers |

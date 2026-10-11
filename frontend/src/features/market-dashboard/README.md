@@ -95,5 +95,6 @@ call `publishTick({ symbol, price, at })` from `lib/tickStore.js`.
 ## Before launch
 
 - The forecast disclaimer in `ForecastPanel.jsx` is draft copy and needs legal review.
+- The watchlist links to `/paper-trading`, the simulated-trading page in `features/paper-trading/`. It uses the real backend (`/paper/*`), not the mock data here.
 - Run the manual screen-reader audit listed in the on-page accessibility notes
   (NVDA, JAWS, VoiceOver).

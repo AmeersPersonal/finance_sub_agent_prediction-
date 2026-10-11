@@ -77,6 +77,20 @@ class Prediction(BaseModel):
         default=None,
         description="Numeric inputs the personas saw, logged to train the stacker (ml/spec.md)",
     )
+    # Added after forecasts were already stored: None must stay the default
+    # (database.repository compares stored payloads with model_dump).
+    withheld_call: Direction | None = Field(
+        default=None,
+        description="The call the call policy withheld as too weak; direction is then unclear",
+    )
+    p_correct: float | None = Field(
+        default=None,
+        description="Calibrated probability the call is right, from scored history (ai/policy.py)",
+    )
+    price_model: dict[str, Any] | None = Field(
+        default=None,
+        description="Model A's class probabilities, logged for the stacker; never shown to personas",
+    )
     generated_at: datetime
     model: str
     prompt_version: str

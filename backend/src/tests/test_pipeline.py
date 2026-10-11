@@ -89,6 +89,14 @@ def test_horizon_flags_earnings_inside_the_window(snapshot):
     assert horizon_info(snapshot, 1, 0.01)["earnings_within_horizon"] is False
 
 
+def test_horizon_carries_past_outcome_shares(snapshot):
+    past = horizon_info(snapshot, 5, 0.01)["past_outcomes_2y"]
+    assert past["up_pct"] + past["flat_pct"] + past["down_pct"] == pytest.approx(100, abs=0.2)
+    assert past["windows"] > 100
+    snapshot.daily = snapshot.daily.iloc[:10]
+    assert horizon_info(snapshot, 5, 0.01)["past_outcomes_2y"] is None  # too short: degrade
+
+
 def test_earnings_unknown_when_calendar_failed(snapshot):
     snapshot.earnings_dates = []
     assert horizon_info(snapshot, 5, 0.01)["earnings_within_horizon"] is False

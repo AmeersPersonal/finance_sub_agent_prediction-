@@ -33,6 +33,14 @@ stacker ~43-48%; realistic ceiling ~47-50%. Anything far above that is leakage.
 - [x] Lever 5, second half: `python -m ml coverage` splits calls made during an insider-buying cluster (`calibration.insider_buying_cluster`: at least 3 purchases and net buying over yfinance's trailing 6 months, from `long_term.insiders_last_6m.*`; Yahoo gives no dates, so "inside the horizon" isn't available). Forecasts without insider data fall in neither table.
 - [x] Lever 6 for the personas: `calibration.persona_rank_spread`, printed by `python -m ml coverage`: on each day with 5+ tickers predicted at one horizon, long the top fifth by net score, short the bottom fifth. Results need Phase 1 runs over many tickers per day.
 - [ ] Only if a model passes the model A gate: re-test it with whole tickers held out of training, the stricter reading of "held-out tickers". Not started on purpose: none has passed.
+- [x] **Bias check** (`python -m ml bias`, 2026-10-10 on the 500-forecast replay): the call mix matches the outcome mix (5d: up 41% called vs 36% actual, flat 24% vs 24%), so no prior correction. long_term voted flat 73% of the time and was right on 24-27% of those votes: it treated "horizon too short for my style" as flat. Flat calls were the worst row (1d 25%, 5d 15%). Fixed in prompt version 7 (past outcome shares in `horizon`, flat is not a way to pass). 5d up calls ended down 47% of the time, but momentum scored 28.8% on the same rows: a 10-day reversal, not a persona bias.
+- [x] Replay (`python -m ml replay`, `ml/replay.py`), prompt version 7: personas are **behind always-up** at both horizons. Against version 6 on the same rows version 7 is worse at 1 day (-6.2 points, interval excludes 0) and not better at 5, because its unclear calls went up (Results: replay).
+- [x] Prompt version 8 = v7's base rates with v6's system prompt (v7's flat instruction reverted). Level with v6 on the replay (-2.1 / -0.7 points, intervals around zero), +4 to +5 points over v7 (not significant alone). Prompt wording hasn't moved accuracy; don't tune it further without live data.
+- [x] Flat vote: forcing personas off flat (v7) made accuracy worse, so it was reverted in v8. Flat calls are right at the base rate (24-26%), so they neither help nor hurt; the lever is elsewhere (regression as the default call).
+- [ ] Persona up/down calls trail the price-only regression by 19-24 points on the replay. Test the regression as the default call, or as a stacker column, once Phase 1 data exists.
+- [x] **Call policy** (`calibration.fit_call_policy`, `ai/policy.py`, `main.py --policy`): abstain below the strength keeping the strongest half of calls, per horizon, enabled only if the kept calls beat always-up by `GATE_MARGIN` on held-out later calls (30+ kept, 100+ scored); strength -> P(right) curve, enabled only if its walk-forward Brier beats a constant. Dry run on the replay, not saved: 1d would abstain below 0.32 (44.1% vs 35.3% always-up, n=34); 5d had 29 held-out calls, one short.
+- [ ] Fit the call policy on Phase 1 data (`python -m ml coverage --save`, plus `--database` if that's the store) and only then use `--policy`. The API doesn't apply the policy yet.
+- [x] **Model A as a stacker column:** `main.py --price-model` logs model A's probabilities in `Prediction.price_model`; `stacker_features` adds `price_model.edge` (P(up) - P(down), NaN unless the forecast is after the model's `trained_through`) and `regression.predicted_return_pct`. Collect Phase 1 with `--price-model` so model B can judge it.
 - [ ] A FinBERT-style per-headline score, tried as a *feature*, not as a predictor. Blocked on data like model B: headlines can't be backfilled, so the feature can only be judged on scored live forecasts (and it adds `transformers` plus a model download).
 
 ## Notes from the database merge (2026-10-10)
@@ -97,11 +105,13 @@ Improve accuracy by learning from outcomes instead of hand-set rules.
 
 | File | Role |
 |---|---|
-| `__main__.py` | CLI: `python -m ml price` (model A plus the gate verdict), `stacker` (model B), `coverage` (levers 1, 2, 5). `--save` stores fitted models |
+| `__main__.py` | CLI: `python -m ml price` (model A plus the gate verdict), `stacker` (model B), `coverage` (levers 1, 2, 5; `--save` fits `data/call_policy.json`), `bias` (calls vs outcomes). `--save` stores fitted models |
 | `dataset.py` | `Dataset` rows, labelled like the scorer (`CLASSES` = down, flat, up). `price_rows` / `pooled_price_rows` reuse `linear_regression.FEATURE_FUNCTIONS`, `forward_return` and `flat_band_series`, with an optional relative-to-benchmark target. `stacker_rows` turns scored `Outcome`s into per-persona votes (collapsed across modes) plus each strategy's and mode's net score. Every row has `known_on`, the day its label became known |
 | `model.py` | `LogisticModel`, `BoostedTreesModel`, `MLPModel` and `PriorModel` (class frequencies). Each has `fit(X, y)` and `predict_proba(X)`, returning (n, 3). `get_device()`. The MLP trains on CUDA when there is a GPU and is pickled on CPU |
 | `walkforward.py` | `schedule` (expanding window, refit per block of dates, trains only on rows with `known_on <= block start`), `walk_forward`, the metrics (accuracy, log-loss, Brier, reliability), `evaluate_price_models` (baselines, per-ticker beat share, trading through `finance.backtest`, rank spread, gate) and `evaluate_stacker` (persona call, logged baselines, `--weights auto` replayed walk-forward, gate) |
-| `calibration.py` | Levers 1, 2 and 5 on scored persona calls: `accuracy_at_coverage`, `coverage_report`, `StrengthCalibrator` (isotonic or Platt) and `evaluate_calibration` (walk-forward Brier) |
+| `calibration.py` | Levers 1, 2 and 5 on scored persona calls: `accuracy_at_coverage`, `coverage_report`, `StrengthCalibrator` (isotonic or Platt) and `evaluate_calibration` (walk-forward Brier). `fit_call_policy` (the abstain threshold and calibration curve `ai/policy.py` applies, each enabled only after a held-out check) and `bias_report` (confusion of calls vs outcomes, persona votes per strategy, rationales citing missing data). A call the policy withheld counts as made (`raw_call`) |
+| `replay.py` | `python -m ml replay`: backdated forecasts through the real `predict()`, scored on the closes that followed. `replay_sessions` (every Nth settled NYSE session), `PriceBook` / `as_of_view` (raw split-adjusted closes, restated to the share units of the forecast day so the scorer doesn't count a split twice), `blind_snapshot` (price-derived inputs only; `BLIND_SOURCES` listed as unavailable), `run_replay` (resumable, stops after N failures in a row), `cluster_ci` / `compare` / `verdict` (accuracy and the edge over always-up with intervals that resample whole dates), `compare_runs` (two replays paired on ticker, date and horizon, for `--against`) |
+| `price_signal.py` | `price_signal(horizon)`: the latest saved model A for that horizon as a function of daily bars, for `main.py --price-model`. Logged in `Prediction.price_model`, never shown to personas |
 | `store.py` | `save` / `load` / `latest` under `backend/data/models/` (gitignored): `<name>-<UTC time>.joblib` plus a sidecar `.json` holding the training date, rows, tickers, features or columns, walk-forward scores and the git revision |
 
 ## Commands
@@ -116,9 +126,24 @@ python -m ml price --horizon 20 --horizon 60    # lever 7 (not a gate run)
 python -m ml price AAPL MSFT NVDA --models logistic --save
 python -m ml stacker [--save]                   # model B, once 300 predictions have resolved
 python -m ml coverage                           # levers 1, 2, 5 on the scored log
+python -m ml coverage --save                    # also fit data/call_policy.json (main.py --policy)
+python -m ml bias                               # calls and persona votes vs outcomes, per horizon
 python -m ml stacker --database                 # the same on forecasts saved in PostgreSQL
 python -m ml coverage --database
+python -m ml replay --dry-run                   # the plan: forecasts and Gemini calls, nothing spent
+python -m ml replay [TICKERS] [--dates 12 --step 5 --horizon 1 --horizon 5 --after YYYY-MM-DD --age 25-39]
+python -m ml replay --report-only [--out FILE]  # score a finished replay file again
+python -m ml replay --report-only --out NEW --against OLD   # the change on the rows both scored
 ```
+
+`replay` is the only command here that calls the LLM (one call per persona per
+forecast; 12 tickers x 12 dates x 2 horizons is 3,744 calls). It writes
+`data/replay-v<prompt version>.jsonl`, resumes from it, and stops after 5
+forecasts in a row fail. See "Results: replay" for how to read it.
+
+Never fit the call policy or the stacker on a replay file: it is prices only, and
+the LLM may have seen the period (see the database-merge notes). `replay` prints
+the policy those rows would give for information and doesn't save it.
 
 `price` downloads about 5 years of daily bars per ticker from Yahoo; `stacker`
 and `coverage` fetch closes to score the log (or, with `--database`, the saved
@@ -179,12 +204,88 @@ tickers where the model beat always-up):
 - MLP numbers can move by a few tenths of a point between GPU runs and against
   CPU. That is well inside the noise.
 
+## Results: replay (2026-10-11, prompt version 7)
+
+`python -m ml replay`: 12 stocks (AAPL MSFT NVDA AMZN JPM XOM JNJ PG KO CAT
+NFLX AMD) x 12 forecast dates (every 5 sessions, 2026-07-16 to 2026-10-02) x
+1- and 5-day horizons = 288 forecasts, all 13 personas, `gemini-3.5-flash-lite`.
+Prices only: fundamentals, analysts, options, news and earnings dates were
+withheld and listed as unavailable. The model's training cutoff is unknown, so
+the dates may overlap what it has seen. 144 forecasts per horizon on 12 dates,
+one rising market: treat the intervals as the real size of the claim.
+
+3-way accuracy, % (95% interval resampling whole dates):
+
+| Horizon | personas | always-up | momentum | regression | personas - always-up |
+|---|---|---|---|---|---|
+| 1d | 27.8 [22.9, 32.6] | 37.5 [29.9, 45.8] | 37.5 | 46.5 [37.5, 54.2] | -9.7 pts [-20.1, -0.7] |
+| 5d | 20.8 [13.2, 28.5] | 40.3 [34.7, 46.5] | 32.6 | 44.4 [39.6, 50.7] | -19.4 pts [-27.1, -11.8] |
+
+- **Behind always-up and the regression at both horizons**, and against SPY
+  at 5 days. At 1 day against SPY it can't be told apart from always-up.
+- **Flat is never called** (0 calls of 288). Version 7 cut long_term's flat
+  votes from 73% to 8-12%, but every strategy followed, so the 24-25% of
+  outcomes that are flat are all misses. Unclear is 19% (1d) and 28% (5d).
+- **Up calls** are right 38% (1d) and 33% (5d), about the up share of outcomes.
+  **Down calls** are right 28% and 17%, worse than guessing the base rate.
+- Citing missing data didn't lower accuracy (34-35% vs 34-36%), so the
+  blinding itself isn't what's hurting. The version 6 replay, which still saw
+  today's fundamentals, scored 35% and 24% on other dates: more data didn't
+  rescue it there either.
+- The call policy has nothing to fit: 18-22 held-out calls kept, 30 needed.
+
+A floor for the live app (which has fundamentals and news), not live accuracy.
+Phase 1 stays the real measurement.
+
+### Version 6 against version 7, same rows (2026-10-11)
+
+The committed version 6 prompt on the same 12 tickers, 12 dates, horizons and
+blinding (`data/replay-v6-blinded.jsonl`; run through a launcher that loads
+`ai/agents.py` from git, the working tree untouched). `python -m ml replay
+--report-only --out replay-v7.jsonl --against replay-v6-blinded.jsonl`:
+
+| Horizon | v6 | v7 | v7 - v6 | always-up |
+|---|---|---|---|---|
+| 1d | 34.0 [27.1, 39.6] | 27.8 [22.9, 32.6] | **-6.2 pts [-11.1, -1.4]** | 37.5 |
+| 5d | 26.4 [18.1, 34.7] | 20.8 [13.2, 28.5] | -5.6 pts [-12.5, +2.1] | 40.3 |
+
+- **Version 7 is worse at 1 day, and not better at 5.** Both versions are behind
+  always-up; v6 is behind it at 5 days by 13.9 points [-23.6, -4.2] and at 1 day
+  can't be told apart.
+- **Where v7 loses:** "unclear" went from 3.5% / 6.2% of calls to 19.4% / 27.8%,
+  and an unclear call is always a miss. With flat votes gone, a split panel
+  has no flat mass to land on, so `confidence_score.aggregate` falls through to
+  unclear. v6's flat calls were right 25-26% of the time, the base rate, so
+  they cost nothing.
+- **Blinding changed little:** v6 blinded (34.0% / 26.4%) is close to the
+  leaky v6 replay on other dates (35.2% / 24.0%).
+- v7 changed two things at once (base rates in the packet, and the prompt's
+  flat instruction), so this doesn't say which hurt. Version 8 is the
+  ablation: v7's base rates with v6's system prompt.
+
+| Horizon | v8 | v8 - v6 | v8 - v7 | always-up |
+|---|---|---|---|---|
+| 1d | 31.9 [24.3, 39.6] | -2.1 pts [-5.6, +2.8] | +4.2 pts [-0.7, +9.7] | 37.5 |
+| 5d | 25.7 [18.1, 34.0] | -0.7 pts [-2.8, +1.4] | +4.9 pts [-2.8, +11.8] | 40.3 |
+
+- **The flat instruction was what hurt.** Unclear is back to 6.2% / 4.9% of
+  calls, and v8 is level with v6.
+- **The base rates have no measurable effect**: -2.1 and -0.7 points against
+  v6, both intervals around zero. Kept because they're harmless and cost
+  nothing, not because they help.
+- **Still behind always-up at 5 days** (-14.6 points [-23.6, -4.9]) and
+  behind the regression at both horizons. Flat is called 30% (1d) and 41%
+  (5d) of the time and is right about 24-26%, the base rate.
+- Three prompt versions all land within a few points of each other on 144
+  forecasts per horizon: wording isn't the lever.
+
 ## Integration (only after a gate passes)
 
 - Model A becomes a fourth entry in the `baselines` dict
   (`ai/evaluation.py`), so `score()` reports it with no scorer change.
 - Model B adds an optional `Prediction.calibrated` and a line in `render`
-  (`main.py`).
+  (`main.py`). The persona strength's own calibration is already
+  `Prediction.p_correct` (`ai/policy.py`).
 - Models are retrained by an explicit command (`python -m ml ... --save`),
   never at request time. Load them with `store.load`, which unpickles, so
   load only files this code wrote.

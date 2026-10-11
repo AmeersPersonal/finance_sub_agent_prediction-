@@ -14,6 +14,7 @@ from finance.indicators import classify_move, flat_band_series
 from ml.calibration import (
     StrengthCalibrator,
     accuracy_at_coverage,
+    bias_report,
     call_rows,
     coverage_report,
     evaluate_calibration,
@@ -24,6 +25,7 @@ from ml.dataset import CLASSES, DOWN, FLAT, UP, pooled_price_rows, price_rows, s
 from ml.model import BoostedTreesModel, LogisticModel, MLPModel, PriorModel
 from ml.store import latest, load, save
 from ml.walkforward import (
+    GATE_MARGIN,
     brier,
     evaluate_price_models,
     evaluate_stacker,
@@ -480,3 +482,143 @@ def test_cli_coverage_prints_the_new_levers(monkeypatch, capsys):
     assert "Persona ranking (lever 6): no day had 5 or more tickers" in out
     cli.main(["stacker", "--target", "relative"])
     assert "relative to SPY: blocked, 0 scored predictions" in capsys.readouterr().out
+
+
+# --- bias ----------------------------------------------------------------------------
+
+
+def test_bias_report_crosses_calls_with_outcomes_and_flags_missing_data():
+    missing = PersonaView(direction="flat", conviction=0.2, rationale="Valuation data is missing.",
+                          key_factors=[])
+    outcomes = [
+        _outcome(date(2026, 1, 5), "up", {"long_term:25-39": [("default", missing)]}),
+        _outcome(date(2026, 1, 6), "up", {"long_term:25-39": [("default", _view("up", 0.9))]}),
+        _outcome(date(2026, 1, 7), "down", {"day_trader:25-39": [("default", _view("up", 0.9))]}),
+    ]
+    (report,) = bias_report(outcomes)
+    assert report.horizon_days == 5 and report.n == 3
+    assert report.confusion["up"] == {"down": 1, "flat": 0, "up": 1}
+    assert report.confusion["flat"]["up"] == 1
+    assert report.actual_share["up"] == pytest.approx(2 / 3)
+    assert report.call_share["flat"] == pytest.approx(1 / 3)
+    long_term = report.by_strategy["long_term"]
+    assert long_term.votes == 2 and long_term.share["flat"] == 0.5
+    assert long_term.hit_rate == {"down": None, "flat": 0.0, "up": 1.0}
+    assert report.missing_data_share == pytest.approx(1 / 3)
+    assert report.missing_data_hit_rate == 0.0 and report.other_hit_rate == 0.5
+
+
+def test_cli_bias_prints_one_table_per_horizon(monkeypatch, capsys, tmp_path):
+    from ai.evaluation import Report
+
+    cli.main(["bias", "--log-file", str(tmp_path / "empty.jsonl")])
+    assert "No predictions have resolved yet" in capsys.readouterr().out
+    outcomes = _synthetic_outcomes(40)
+    one_day = [_with(o, {"horizon_days": 1}) for o in outcomes[:10]]
+    report = Report(scored=40, pending=0, unreadable=0, accuracy={}, coverage=None,
+                    accuracy_when_called=None, by_confidence={}, by_strategy={}, by_age_band={},
+                    outcomes=one_day + outcomes[10:])
+    monkeypatch.setattr(cli, "score_log", lambda path: report)
+    cli.main(["bias"])
+    out = capsys.readouterr().out
+    assert out.index("1-day horizon: 10 scored") < out.index("5-day horizon: 30 scored")
+    assert "called / actual" in out and "long_term" in out and "cites missing data" in out
+
+
+# --- the call policy and model A's logged signal --------------------------------------
+
+
+def _policy_outcomes(n: int = 240) -> list[Outcome]:
+    """Strong calls are right and weak ones wrong; outcomes rotate, so always-up is ~33%."""
+    days = pd.bdate_range("2025-01-01", periods=n)
+    outcomes = []
+    for k in range(n):
+        actual = CLASSES[k % 3]
+        wrong = CLASSES[(k + 1) % 3]
+        view = _view(actual, 0.9) if k % 2 else _view(wrong, 0.3)
+        outcomes.append(_outcome(days[k].date(), actual, {"long_term:25-39": [("default", view)]}))
+    return outcomes
+
+
+def test_call_policy_abstains_when_strong_calls_beat_always_up():
+    from ml.calibration import fit_call_policy
+
+    policy = fit_call_policy(_policy_outcomes())
+    rule = policy["abstain"]["5"]
+    assert rule["enabled"] and 0.3 < rule["min_strength"] <= 0.9
+    assert rule["held_out_accuracy"] == 1.0 and rule["held_out_always_up"] < 0.5
+    assert policy["calibration"]["enabled"] and len(policy["calibration"]["curve"]) == 21
+    few = fit_call_policy(_policy_outcomes(60))
+    assert not few["abstain"]["5"]["enabled"] and "need 100" in few["abstain"]["5"]["reason"]
+
+
+def test_call_policy_stays_off_when_strength_carries_nothing():
+    from ml.calibration import fit_call_policy
+
+    days = pd.bdate_range("2025-01-01", periods=240)
+    outcomes = [  # always "down", strength unrelated to the outcome
+        _outcome(days[k].date(), CLASSES[k % 3],
+                 {"long_term:25-39": [("default", _view("down", 0.2 + 0.1 * (k % 7)))]})
+        for k in range(240)
+    ]
+    policy = fit_call_policy(outcomes)
+    rule = policy["abstain"]["5"]
+    assert not rule["enabled"] and "don't beat always-up" in rule["reason"]
+    assert rule["held_out_accuracy"] - rule["held_out_always_up"] <= GATE_MARGIN
+    assert not policy["calibration"]["enabled"] and "curve" not in policy["calibration"]
+
+
+def test_withheld_calls_count_as_made_when_refitting():
+    o = _outcome(date(2026, 1, 5), "up", {"long_term:25-39": [("default", _view("up", 0.9))]})
+    withheld = _with(o, {"direction": "unclear", "withheld_call": "up"})
+    rows = call_rows([withheld])
+    assert rows.correct[0] and rows.strength[0] == pytest.approx(0.9)
+    (report,) = bias_report([withheld])
+    assert report.confusion["up"]["up"] == 1
+
+
+def test_stacker_sees_the_regression_and_model_a_only_after_its_training():
+    o = _outcome(date(2026, 1, 5), "up", {"long_term:25-39": [("default", _view("up", 0.9))]})
+    signal = {"p_up": 0.5, "p_flat": 0.2, "p_down": 0.3}
+    late = _with(o, {"linear_regression": {"predicted_return_pct": 0.8},
+                     "price_model": {**signal, "trained_through": "2026-01-02"}})
+    seen = _with(o, {"price_model": {**signal, "trained_through": "2026-01-05"}})
+    def row(outcome):
+        data = stacker_rows([outcome])
+        return dict(zip(data.feature_names, data.X[0]))
+
+    assert row(late)["regression.predicted_return_pct"] == 0.8
+    assert row(late)["price_model.edge"] == pytest.approx(0.2)
+    assert np.isnan(row(seen)["price_model.edge"])  # model A trained on this outcome
+    assert np.isnan(row(seen)["regression.predicted_return_pct"])
+
+
+def test_price_signal_reads_the_saved_model_for_its_horizon(tmp_path):
+    from ml.price_signal import price_signal
+
+    daily = _daily(seed=1)
+    data = price_rows(daily, 5)
+    model = LogisticModel().fit(data.X, data.y)
+    save(model, "price-logistic-5d-absolute", {"features": list(data.feature_names),
+         "data_through": "2026-01-01", "walk_forward": {"passes_gate": False}}, tmp_path)
+    assert price_signal(1, directory=tmp_path) is None
+    result = price_signal(5, directory=tmp_path)(daily)
+    assert result["p_up"] + result["p_flat"] + result["p_down"] == pytest.approx(1, abs=1e-3)
+    assert result["trained_through"] == "2026-01-01" and result["passes_gate"] is False
+    assert price_signal(5, directory=tmp_path)(daily.iloc[:5]) is None  # too short: no features
+
+
+def test_cli_coverage_save_writes_the_policy(monkeypatch, capsys):
+    from ai.evaluation import Report
+
+    outcomes = _policy_outcomes()
+    report = Report(scored=len(outcomes), pending=0, unreadable=0, accuracy={}, coverage=None,
+                    accuracy_when_called=None, by_confidence={}, by_strategy={}, by_age_band={},
+                    outcomes=outcomes)
+    monkeypatch.setattr(cli, "score_log", lambda path: report)
+    written = []
+    monkeypatch.setattr(cli, "save_policy", lambda data: written.append(data) or Path("call_policy.json"))
+    cli.main(["coverage", "--save"])
+    out = capsys.readouterr().out
+    assert "Call policy, fitted on 240 scored calls" in out and "5-day: abstain below" in out
+    assert written[0]["abstain"]["5"]["enabled"] and written[0]["source"].endswith("predictions.jsonl")

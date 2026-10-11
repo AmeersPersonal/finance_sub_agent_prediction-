@@ -16,7 +16,7 @@ export const strings = {
   noPrices: 'No saved prices for this ticker yet.', loadData: 'Fetch data for this ticker',
   refresh: 'Refresh data', refreshing: 'Fetching prices and news…', refreshed: 'Data refreshed.', dataAsOf: 'Data as of',
   noWatchlist: 'Start with companies you already know — like the maker of your phone or your favorite drink.',
-  add: 'Add', remove: 'Remove', paper: 'Practice with paper trading →', paperNote: 'Opens a separate practice route; no trading happens here.',
+  add: 'Add', remove: 'Remove', paper: 'Practice with paper trading →', paperNote: 'Opens a practice page with virtual cash. No real money is used.',
   disclaimer: 'Educational estimate from AI trader personas. Not financial advice. Prices can move in any direction.',
   noForecast: 'No forecast for this ticker yet. Twelve AI trader personas (three strategies, four age groups) can read its prices, financials and news and vote on the next five trading days.',
   runFirst: 'Run the first forecast', runAgain: 'Run a new forecast',

@@ -1,6 +1,6 @@
 # Hackknight 2026 — Market Moves
 
-Educational market app for Hackknight 2026. The site explains what happened to a price, why it moved, and what a set of trader personas thinks might happen next. It does not place trades and it is not financial advice.
+Educational market app for Hackknight 2026. The site explains what happened to a price, why it moved, and what a set of trader personas thinks might happen next. It has a **paper-trading** practice page with virtual cash, but it never places real trades, and it is not financial advice.
 
 The repo has two apps that are merged on `main` and still run separately:
 
@@ -28,6 +28,7 @@ npm test          # Vitest: dashboard, sign-in pages and API client against a fa
 | `/Signup` | Create an account (`POST /signup`; the backend stores only a password hash), then sign in. |
 | `/Dashboard` | Market Move Dashboard: story, chart, why it moved, the personas' forecast and votes, news, and watchlist, all from the backend API (start it first; `/api` is proxied to port 8000). Lazy-loaded. |
 | `/scenarios` | Market Move Scenarios: move hypothetical factors and see an educational example. Not a forecast. |
+| `/paper-trading` | Simulated buys and sells with $100,000 of virtual cash, filled at the latest saved daily close, with holdings, P&L and order history. Needs the backend (`/paper/*`) and a stock whose prices have been refreshed. No real money. |
 
 Dashboard notes, including which API route feeds each panel, are in [`frontend/src/features/market-dashboard/README.md`](frontend/src/features/market-dashboard/README.md).
 
@@ -60,7 +61,7 @@ Or, from `backend/` with `POSTGRES_PASSWORD` and `GEMINI_API_KEY` in `.env`:
 docker compose up --build       # PostgreSQL + migrations + API on http://127.0.0.1:8000
 ```
 
-Creating a forecast through the API requires Google sign-in unless `API_REQUIRE_SIGN_IN=false`. Reads do not. A forecast usually takes 10–60 seconds; `POST /prediction-jobs` returns immediately and is polled with `GET /prediction-jobs/{job_id}`.
+Creating a forecast through the API requires Google sign-in unless `API_REQUIRE_SIGN_IN=false`. Reads do not. Paper trading (`/paper/*`) needs sign-in too, or `API_REQUIRE_SIGN_IN=false` for one local account per client address. Run `python -m database.migrate` first (migration 009), and point the frontend at the API with `VITE_API_BASE_URL` (default `http://localhost:8000`). A forecast usually takes 10–60 seconds; `POST /prediction-jobs` returns immediately and is polled with `GET /prediction-jobs/{job_id}`.
 
 
 ## More documentation

@@ -58,12 +58,15 @@ def env(monkeypatch, fake_llm):
         calls.append((method, args, kwargs))
         return {"id": "p-1", "ticker": args[0], "direction": "up"}
 
+    # The worker route calls get_llm() itself, so a dependency override doesn't reach it.
+    route_llm = main.get_llm
+    monkeypatch.setattr(main, "get_llm", lambda: fake_llm)
     monkeypatch.setattr(main, "_service", service)
     monkeypatch.setattr(main, "durable_jobs", lambda: durable)
     monkeypatch.setenv("API_REQUIRE_SIGN_IN", "true")
     main.prediction_limiter.clear()
     main.app.dependency_overrides = {
-        main.get_llm: lambda: fake_llm, get_store: lambda: store, get_settings: lambda: SETTINGS,
+        route_llm: lambda: fake_llm, get_store: lambda: store, get_settings: lambda: SETTINGS,
     }
     with TestClient(main.app) as client:
         client.cookies.set(SESSION_COOKIE, store.create_session(USER))

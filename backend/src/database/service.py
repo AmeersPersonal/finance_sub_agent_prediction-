@@ -238,12 +238,14 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
                             age_bands: list[str] | None = None, *, llm=None,
                             strategy_weights: dict[str, float] | str | None = None,
                             modes: list[ReasoningMode] | None = None,
-                            live: bool = False, audit: bool = False):
+                            live: bool = False, audit: bool = False,
+                            policy=None, price_signal=None):
     """Fetch, store, retrieve evidence, forecast and save atomically.
 
     `strategy_weights="auto"` derives weights from the saved persona evaluations
     (no price downloads); `live` takes the last price from Yahoo's websocket;
     `audit` adds the company overview, checks, risk flags and news digest.
+    `policy` and `price_signal` pass through to `ai.main.predict`.
     """
     ticker = normalize_ticker(ticker)
     if not 1 <= horizon_days <= 252:
@@ -273,7 +275,8 @@ async def predict_and_store(ticker: str, horizon_days: int = 5,
                                        age_bands=age_bands, snapshot=snapshot, llm=llm,
                                        strategy_weights=strategy_weights, modes=modes,
                                        live_feed=live_feed_from_env() if live else None,
-                                       documents_by_strategy=snippets, regression_daily=regression_daily)
+                                       documents_by_strategy=snippets, regression_daily=regression_daily,
+                                       policy=policy, price_signal=price_signal)
             if audit:
                 prediction.audit = await audit_prediction(prediction, snapshot, llm)
     finally:

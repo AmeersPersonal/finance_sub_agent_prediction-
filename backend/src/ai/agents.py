@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 
 # Bump when prompts or packets change, so logged predictions stay comparable, and
 # say what changed in PROMPT_CHANGELOG (a test fails if the current version is missing).
-PROMPT_VERSION = "6"
+PROMPT_VERSION = "8"
 PROMPT_CHANGELOG = {
     "1": "Unrecorded: predates the first commit.",
     "2": "Unrecorded: predates the first commit.",
@@ -62,6 +62,19 @@ PROMPT_CHANGELOG = {
         "each labelled with its role (company info, public opinion, product event) and an "
         "unconfirmed mark for rumor wording; retrieval mixes the roles per strategy; personas "
         "cite passage IDs in source_ids. Untrusted-evidence instructions in the system prompt."
+    ),
+    "7": (
+        "horizon.past_outcomes_2y: share of the last two years' windows of this length that "
+        "ended up / flat / down (point-in-time band). System prompt: flat is a forecast, not a "
+        "way to pass; missing data or a horizon outside the persona's style lowers conviction "
+        "instead of turning the vote flat. On the replay, long_term voted flat 73% of the time "
+        "and was right on 24-27% of those votes (`python -m ml bias`)."
+    ),
+    "8": (
+        "Keeps version 7's horizon.past_outcomes_2y and takes back its system-prompt additions, "
+        "so the system prompt is version 6's again. On the prices-only replay version 7 scored "
+        "6.2 points below version 6 at 1 day: with no flat votes a split panel fell through to "
+        "unclear (19-28% of calls against 4-6%), and unclear always counts as a miss."
     ),
 }
 
@@ -117,6 +130,20 @@ def horizon_info(snapshot: MarketSnapshot, horizon_days: int, flat_band: float) 
         "flat_band_pct": round(flat_band * 100, 3),
         "next_earnings_date": str(next_earnings) if next_earnings else None,
         "earnings_within_horizon": within,
+        "past_outcomes_2y": _base_rates(snapshot.daily["Close"], horizon_days),
+    }
+
+
+def _base_rates(close: pd.Series, horizon_days: int) -> dict[str, Any] | None:
+    """Share of past windows of this length that ended up / flat / down, in percent."""
+    try:
+        rates = ind.outcome_base_rates(close, horizon_days)
+    except Exception as exc:
+        log.debug("outcome base rates unavailable: %s", exc)
+        return None
+    return {
+        **{f"{d}_pct": _num(rates[d], pct=True, digits=1) for d in ("up", "flat", "down")},
+        "windows": rates["windows"],
     }
 
 
