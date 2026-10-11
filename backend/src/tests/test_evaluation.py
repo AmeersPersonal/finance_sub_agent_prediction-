@@ -1,0 +1,410 @@
+from datetime import date, datetime
+
+import pandas as pd
+import pytest
+
+from ai.evaluation import (
+    MARKET_TZ,
+    baselines,
+    derive_strategy_weights,
+    load_log,
+    Pending,
+    assess,
+    log_prediction,
+    resolve,
+    score,
+)
+from ai.schemas import PersonaResult, PersonaView, Prediction
+
+
+def make_prediction(direction="up", confidence=0.4, votes=(), **overrides) -> Prediction:
+    fields = dict(
+        ticker="TEST", horizon_days=5, direction=direction, confidence=confidence,
+        net_score=0.4, agreement=1.0, by_strategy={}, flat_band_pct=1.0, last_price=100.0,
+        data_as_of="2026-10-09", next_earnings_date=None, earnings_within_horizon=None,
+        baselines={"always_up": "up", "momentum": "down"}, linear_regression=None,
+        generated_at=datetime(2026, 10, 9, 21, 0, tzinfo=MARKET_TZ), model="fake",
+        prompt_version="2", data_warnings=[],
+        personas=[
+            PersonaResult(
+                persona_id=f"{s}:{a}", strategy=s, age_band=a,
+                view=PersonaView(direction=d, conviction=0.5, rationale="", key_factors=[]),
+            )
+            for s, a, d in votes
+        ],
+    )
+    return Prediction(**{**fields, **overrides})
+
+
+def closes(final_close: float) -> pd.Series:
+    days = [d.date() for d in pd.bdate_range("2026-10-05", "2026-10-20")]
+    values = [100.0] * len(days)
+    values[days.index(date(2026, 10, 16))] = final_close  # 5 trading days after 10-09
+    return pd.Series(values, index=days)
+
+
+def at(day: str, hour: int) -> datetime:
+    return datetime.fromisoformat(f"{day}T{hour:02d}:00").replace(tzinfo=MARKET_TZ)
+
+
+def test_resolve_uses_the_close_n_trading_days_later():
+    outcome = resolve(make_prediction(), closes(103.0), at("2026-10-20", 12))
+    assert outcome.resolved_on == date(2026, 10, 16)
+    assert outcome.return_pct == 3.0
+    assert outcome.actual == "up"
+    assert resolve(make_prediction(), closes(100.5), at("2026-10-20", 12)).actual == "flat"
+
+
+def test_resolve_converts_the_logged_price_across_a_split():
+    # Logged at 400 before a 4:1 split; Yahoo's history shows every close in post-split units.
+    values = _session_closes(100.0, 103.0)
+    prediction = make_prediction(last_price=400.0)
+    outcome = resolve(prediction, yahoo_closes(values, {"2026-10-13": 4.0}), at("2026-10-20", 12))
+    assert outcome.return_pct == 3.0 and outcome.actual == "up"
+    # Read as if it were already in the logged share basis, it would look like a 74% crash.
+    plain = pd.Series({date.fromisoformat(d): v for d, v in values.items()})
+    assert resolve(prediction, plain, at("2026-10-20", 12)).actual == "down"
+
+
+@pytest.mark.parametrize("splits, factor", [
+    ({"2026-10-09": 2.0, "2026-10-13": 4.0}, 4.0),  # a split on the data date is already priced in
+    ({"2026-10-08": 2.0, "2026-10-13": 4.0}, 4.0),  # ...and so is one before it
+    ({"2026-10-13": 0.1}, 0.1),                     # reverse split
+    ({}, 1.0),
+])
+def test_only_splits_after_the_data_date_count(splits, factor):
+    values = _session_closes(100.0, 103.0)
+    outcome = resolve(make_prediction(last_price=100.0 * factor), yahoo_closes(values, splits),
+                      at("2026-10-20", 12))
+    assert outcome.split_factor == factor and outcome.return_pct == 3.0
+
+
+def test_score_passes_split_history_through():
+    report = score([make_prediction(last_price=200.0)],
+                   {"TEST": yahoo_closes(_session_closes(100.0, 105.0), {"2026-10-13": 2.0})},
+                   at("2026-10-20", 12))
+    assert report.outcomes[0].return_pct == 5.0
+
+
+def test_derived_weights_favour_the_more_accurate_strategy():
+    votes = {"good": [True] * 80 + [False] * 20, "bad": [True] * 20 + [False] * 80}
+    weights = derive_strategy_weights(votes)
+    assert weights["good"] > 1 > weights["bad"] > 0
+
+
+def test_derived_weights_stay_near_one_with_few_votes():
+    weights = derive_strategy_weights({"a": [True, True], "b": [False, False]})
+    assert weights["a"] == pytest.approx(1, abs=0.1) and weights["b"] == pytest.approx(1, abs=0.1)
+    assert derive_strategy_weights({}) == {} and derive_strategy_weights({"a": [False]}) == {}
+
+
+def test_score_reports_strategy_weights():
+    right = make_prediction(votes=[("long_term", "18-24", "up"), ("day_trader", "18-24", "down")])
+    report = score([right], {"TEST": closes(105.0)}, at("2026-10-20", 12))
+    assert report.strategy_weights["long_term"] > report.strategy_weights["day_trader"]
+
+
+def test_an_unfinalised_target_close_stays_pending():
+    # A NaN close would otherwise classify as "flat" and count as a scored outcome.
+    assert resolve(make_prediction(), closes(float("nan")), at("2026-10-20", 12)) is None
+
+
+def test_resolve_waits_for_the_closing_bar_to_settle():
+    assert resolve(make_prediction(), closes(103.0), at("2026-10-16", 10)) is None
+    assert resolve(make_prediction(), closes(103.0), at("2026-10-16", 17)) is not None
+
+
+def test_score_compares_personas_against_baselines():
+    right = make_prediction("up", 0.6, votes=[("long_term", "18-24", "up"), ("day_trader", "18-24", "down")])
+    abstained = make_prediction("unclear", 0.0, ticker="OTHER")
+    report = score(
+        [right, abstained, make_prediction(ticker="NODATA")],
+        {"TEST": closes(105.0), "OTHER": closes(95.0)},
+        at("2026-10-20", 12),
+    )
+    assert (report.scored, report.pending) == (2, 1)
+    assert report.accuracy == {"personas": 0.5, "always_up": 0.5, "momentum": 0.5}
+    assert report.coverage == 0.5 and report.accuracy_when_called == 1.0
+    assert report.by_confidence["0.50-1.00"] == (1, 1.0)
+    assert report.by_strategy == {"day_trader": 0.0, "long_term": 1.0}
+
+
+def test_score_breaks_votes_down_by_mode_and_model():
+    personas = [
+        PersonaResult(
+            persona_id="long_term:18-24", strategy="long_term", age_band="18-24",
+            mode=mode, model=model,
+            view=PersonaView(direction=d, conviction=0.5, rationale="", key_factors=[]),
+        )
+        for mode, model, d in (("cool", "small", "up"), ("hot", "big", "down"))
+    ]
+    legacy = make_prediction(votes=[("long_term", "25-39", "up")], ticker="OLD")  # no mode fields
+    report = score(
+        [make_prediction(personas=personas), legacy],
+        {"TEST": closes(105.0), "OLD": closes(105.0)},
+        at("2026-10-20", 12),
+    )
+    assert report.by_mode == {"cool": 1.0, "default": 1.0, "hot": 0.0}
+    assert report.by_model == {"big": 0.0, "fake": 1.0, "small": 1.0}
+
+
+def test_old_log_lines_without_modes_still_load(tmp_path):
+    path = tmp_path / "log.jsonl"
+    record = make_prediction(votes=[("long_term", "18-24", "up")]).model_dump(mode="json")
+    for key in ("modes", "by_mode", "stability"):
+        record.pop(key)
+    for persona in record["personas"]:
+        for key in ("mode", "model", "temperature"):
+            persona.pop(key)
+    import json
+
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    loaded, unreadable = load_log(path)
+    assert unreadable == 0 and loaded[0].modes == ["default"]
+    assert loaded[0].personas[0].mode == "default"
+
+
+def test_log_round_trip_skips_unreadable_lines(tmp_path):
+    path = tmp_path / "log.jsonl"
+    prediction = make_prediction()
+    log_prediction(prediction, path)
+    with path.open("a") as f:
+        f.write('{"not": "a prediction"}\n')
+    loaded, unreadable = load_log(path)
+    assert loaded == [prediction] and unreadable == 1
+    assert load_log(tmp_path / "missing.jsonl") == ([], 0)
+
+
+def test_baselines():
+    rising = pd.Series([1.0, 2, 3, 4, 5, 6, 7])
+    assert baselines(rising, 5, None) == {"always_up": "up", "momentum": "up"}
+    assert baselines(rising[::-1].reset_index(drop=True), 5, -0.2)["momentum"] == "down"
+    assert baselines(rising, 5, -0.2)["linear_regression"] == "down"
+
+
+@pytest.mark.parametrize("ret,expected", [(0.02, "up"), (-0.02, "down"), (0.005, "flat")])
+def test_classification_matches_flat_band(ret, expected):
+    from finance.indicators import classify_move
+
+    assert classify_move(ret, 0.01) == expected
+
+
+def yahoo_closes(values: dict[str, float], splits: dict[str, float], verified=True) -> pd.Series:
+    series = pd.Series({date.fromisoformat(d): v for d, v in values.items()})
+    series.attrs.update(price_basis="yahoo_split_adjusted_close", actions_verified=verified,
+                        calendar="XNYS", stock_splits=splits)
+    return series
+
+
+def _session_closes(close: float, final: float, start="2026-10-05", end="2026-10-20"):
+    days = [d.date().isoformat() for d in pd.bdate_range(start, end)]
+    return {d: (final if d == "2026-10-16" else close) for d in days}
+
+
+def test_split_inside_horizon_is_not_a_false_loss():
+    # 4:1 split on 10-13; Yahoo restates every earlier close to the new share basis.
+    values = _session_closes(25.0, 26.0)
+    outcome = resolve(make_prediction(), yahoo_closes(values, {"2026-10-13": 4.0}), at("2026-10-20", 12))
+    assert outcome.return_pct == 4.0 and outcome.actual == "up"
+    assert outcome.split_factor == 4.0 and outcome.actual_price == 104.0
+
+
+def test_split_after_outcome_date_is_also_undone():
+    # A later 2:1 split halves the already-restated outcome close again.
+    values = _session_closes(12.5, 13.0)
+    outcome = resolve(make_prediction(), yahoo_closes(values, {"2026-10-13": 4.0, "2026-10-20": 2.0}),
+                      at("2026-10-20", 12))
+    assert outcome.return_pct == 4.0 and outcome.split_factor == 8.0
+
+
+def test_split_before_entry_is_ignored():
+    values = _session_closes(100.0, 103.0)
+    outcome = resolve(make_prediction(), yahoo_closes(values, {"2026-10-01": 2.0}), at("2026-10-20", 12))
+    assert outcome.return_pct == 3.0 and outcome.split_factor == 1.0
+
+
+def test_unverified_corporate_actions_or_unknown_basis_stay_unscored():
+    values = _session_closes(100.0, 103.0)
+    assert resolve(make_prediction(), yahoo_closes(values, {}, verified=False), at("2026-10-20", 12)) is None
+    unknown = closes(103.0)
+    unknown.attrs["price_basis"] = "dividend_adjusted"
+    assert resolve(make_prediction(), unknown, at("2026-10-20", 12)) is None
+
+
+def test_missing_session_bar_does_not_shift_the_outcome_date():
+    series = closes(103.0).drop(date(2026, 10, 14))
+    assert resolve(make_prediction(), series, at("2026-10-20", 12)) is None
+
+
+def test_exchange_holidays_are_not_counted_as_sessions():
+    # Thanksgiving 2026-11-26 is closed: two sessions after 11-24 is the 11-27 half day.
+    prediction = make_prediction(data_as_of="2026-11-24", horizon_days=2)
+    days = [d.date() for d in pd.bdate_range("2026-11-20", "2026-12-01") if d.date() != date(2026, 11, 26)]
+    series = pd.Series([100.0] * len(days), index=days)
+    series[date(2026, 11, 27)] = 97.0
+    assert resolve(prediction, series, at("2026-11-27", 13)) is None  # 13:00 early close not settled
+    outcome = resolve(prediction, series, at("2026-11-27", 14))
+    assert outcome.resolved_on == date(2026, 11, 27) and outcome.actual == "down"
+
+
+def test_scoring_requires_an_exchange_session_and_aware_clock():
+    assert resolve(make_prediction(data_as_of="2026-10-10"), closes(103.0), at("2026-10-20", 12)) is None
+    assert resolve(make_prediction(), closes(103.0), datetime(2026, 10, 20, 12)) is None
+
+
+def test_fetch_closes_reads_exchange_from_mapping_metadata(monkeypatch):
+    """yfinance returns a HistoryMetadata Mapping, not a dict; it must still set the calendar."""
+    import sys
+    import types
+    from collections.abc import Mapping
+
+    from ai.evaluation import fetch_closes
+
+    class Metadata(Mapping):
+        def __init__(self, data): self._data = data
+        def __getitem__(self, key): return self._data[key]
+        def __iter__(self): return iter(self._data)
+        def __len__(self): return len(self._data)
+
+    index = pd.DatetimeIndex(pd.bdate_range("2026-10-05", "2026-10-09"), tz=MARKET_TZ)
+    history = pd.DataFrame({"Close": [100.0] * 5, "Stock Splits": [0.0] * 5}, index=index)
+
+    class FakeTicker:
+        def __init__(self, symbol): pass
+        def history(self, **_): return history
+        def get_history_metadata(self): return Metadata({"exchangeName": "NMS"})
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=FakeTicker))
+    series = fetch_closes(["TEST"], date(2026, 10, 5))["TEST"]
+    assert series.attrs["calendar"] == "XNYS"
+    assert series.attrs["actions_verified"] is True
+
+
+def test_pending_reason_names_holidays_and_early_closes():
+    # Thanksgiving 2026-11-26 closed, 11-27 closes at 13:00, so 2 sessions after 11-25 is 11-30.
+    result = assess(make_prediction(data_as_of="2026-11-25", horizon_days=2), closes(100.0),
+                    at("2026-11-27", 12))
+    assert isinstance(result, Pending) and result.reason == "horizon_open"
+    assert "ends on 2026-11-30 (Monday)" in result.detail and "16:30 ET" in result.detail
+    assert "2026-11-26 Thanksgiving" in result.detail
+    assert "2026-11-27 early close at 13:00 ET" in result.detail
+    assert result.retry_after == datetime(2026, 11, 30, 16, 30, tzinfo=MARKET_TZ)
+
+
+def test_pending_reason_for_a_missing_session_bar():
+    result = assess(make_prediction(), closes(103.0).drop(date(2026, 10, 14)), at("2026-10-20", 12))
+    assert result.reason == "missing_bar"
+    assert "No closing price for 2026-10-14" in result.detail
+    assert "unscheduled closure" in result.detail
+
+
+@pytest.mark.parametrize("prediction, series, reason, words", [
+    (make_prediction(data_as_of="2026-11-26"), closes(100.0), "not_a_session", "Thanksgiving"),
+    (make_prediction(data_as_of="2026-10-10"), closes(100.0), "not_a_session", "weekend"),
+    (make_prediction(), None, "no_price_data", "no history for TEST"),
+    (make_prediction(), yahoo_closes(_session_closes(1.0, 1.0), {}, verified=False),
+     "corporate_actions", "split history"),
+])
+def test_pending_reasons_explain_themselves(prediction, series, reason, words):
+    result = assess(prediction, series, at("2026-12-01", 12))
+    assert result.reason == reason and words in result.detail
+
+
+def test_score_lists_why_each_prediction_is_pending():
+    waiting = make_prediction(data_as_of="2026-10-16")
+    report = score([make_prediction(), waiting, make_prediction(ticker="NODATA")],
+                   {"TEST": closes(103.0)}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.pending == 2
+    assert [(p.prediction.ticker, p.reason) for p in report.pending_details] == [
+        ("TEST", "horizon_open"), ("NODATA", "no_price_data")]
+
+
+# --- relative to SPY, stability, log rotation --------------------------------------
+
+
+def spy(entry: float, final: float) -> pd.Series:
+    """SPY closes: `entry` on the data date (10-09), `final` on the outcome date (10-16)."""
+    days = [d.date() for d in pd.bdate_range("2026-10-05", "2026-10-20")]
+    values = {d: entry for d in days}
+    values[date(2026, 10, 16)] = final
+    return pd.Series(values)
+
+
+def test_relative_outcome_compares_against_spy_over_the_same_sessions():
+    # The stock rose 5% while SPY rose 2%: up in absolute terms and relative to the market.
+    beat = make_prediction("up", 0.6)
+    # Up 3% while SPY rose 5%: up in absolute terms, but it lagged the market.
+    lagged = make_prediction("up", 0.6, ticker="LAG")
+    report = score([beat, lagged], {"TEST": closes(105.0), "LAG": closes(103.0), "SPY": spy(400.0, 420.0)},
+                   at("2026-10-20", 12))
+    first, second = report.outcomes
+    assert first.benchmark_return_pct == 5.0 and first.relative_return_pct == pytest.approx(0.0)
+    assert (first.actual, first.relative_actual) == ("up", "flat")
+    assert (second.actual, second.relative_actual) == ("up", "down")
+    assert report.accuracy["always_up"] == 1.0  # a rising market flatters always-up...
+    assert report.relative == {"benchmark": "SPY", "scored": 2,  # ...but not here
+                               "accuracy": {"personas": 0.0, "always_up": 0.0, "momentum": 0.5}}
+
+
+def test_relative_outcome_beats_the_market():
+    report = score([make_prediction("up", 0.6)], {"TEST": closes(105.0), "SPY": spy(400.0, 408.0)},
+                   at("2026-10-20", 12))
+    outcome = report.outcomes[0]
+    assert outcome.benchmark_return_pct == 2.0
+    assert outcome.relative_return_pct == pytest.approx(2.941, abs=0.001) and outcome.relative_actual == "up"
+
+
+def test_relative_outcome_needs_spy_on_both_dates_and_never_blocks_scoring():
+    report = score([make_prediction()], {"TEST": closes(105.0)}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.outcomes[0].relative_actual is None and report.relative == {}
+    gappy = spy(400.0, 408.0).drop(date(2026, 10, 9))
+    report = score([make_prediction()], {"TEST": closes(105.0), "SPY": gappy}, at("2026-10-20", 12))
+    assert report.scored == 1 and report.relative == {}
+    # SPY against itself carries no information.
+    report = score([make_prediction(ticker="SPY")], {"SPY": closes(105.0)}, at("2026-10-20", 12))
+    assert report.outcomes[0].relative_actual is None
+
+
+def test_scoring_fetches_spy_too():
+    from ai.evaluation import scoring_tickers
+
+    assert scoring_tickers([make_prediction(ticker="AAPL")]) == {"AAPL", "SPY"}
+
+
+def test_score_breaks_calls_down_by_stability():
+    steady = make_prediction("up", 0.6, stability=0.9)
+    shaky = make_prediction("up", 0.6, stability=0.6, ticker="OTHER")
+    unclear = make_prediction("unclear", 0.0, stability=0.0, ticker="THIRD")
+    report = score([steady, shaky, unclear],
+                   {"TEST": closes(105.0), "OTHER": closes(95.0), "THIRD": closes(105.0)},
+                   at("2026-10-20", 12))
+    assert report.by_stability == {"0.00-0.50": (0, None), "0.50-0.75": (1, 0.0), "0.75-1.00": (1, 1.0)}
+
+
+def test_log_rotates_by_year_and_keeps_every_prediction(tmp_path):
+    from ai.evaluation import log_files, rotate_log
+
+    path = tmp_path / "predictions.jsonl"
+    old = make_prediction(generated_at=datetime(2025, 12, 31, 15, tzinfo=MARKET_TZ))
+    new = make_prediction(generated_at=datetime(2026, 1, 2, 15, tzinfo=MARKET_TZ))
+    log_prediction(old, path)
+    log_prediction(new, path, max_bytes=1)  # over the limit: rotate, then append
+    with path.open("a", encoding="utf-8") as f:
+        f.write("not json\n")
+    newest = make_prediction(generated_at=datetime(2026, 3, 2, 15, tzinfo=MARKET_TZ))
+    log_prediction(newest, path, max_bytes=1)
+    assert [p.name for p in log_files(path)] == ["predictions-2025.jsonl", "predictions-2026.jsonl",
+                                                 "predictions.jsonl"]
+    loaded, unreadable = load_log(path)
+    assert [p.id for p in loaded] == [old.id, new.id, newest.id] and unreadable == 1
+    assert path.read_text(encoding="utf-8").count("\n") == 1  # only the newest is live
+    assert rotate_log(path) == []  # under the default 100 MB: nothing to do
+
+
+def test_a_crash_mid_rotation_duplicates_instead_of_losing(tmp_path):
+    path = tmp_path / "predictions.jsonl"
+    p = make_prediction()
+    log_prediction(p, path)
+    (tmp_path / "predictions-2026.jsonl").write_text(p.model_dump_json() + "\n", encoding="utf-8")
+    loaded, _ = load_log(path)
+    assert [x.id for x in loaded] == [p.id]

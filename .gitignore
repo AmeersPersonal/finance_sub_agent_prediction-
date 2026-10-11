@@ -15,6 +15,7 @@ token.json
 token.pickle
 *.pem
 *.key
+*.p8
 *.p12
 *.pfx
 
@@ -41,6 +42,9 @@ vector_store/
 faiss_index/
 *.faiss
 *.sqlite3
+
+# Local prediction log (python main.py appends here; python main.py --score reads it)
+backend/data/
 
 # ---------------------------------------------------------------------------
 # Python
@@ -69,3 +73,32 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------------------------------------------------------------------------
+# FRONTEND
+# ---------------------------------------------------------------------------
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

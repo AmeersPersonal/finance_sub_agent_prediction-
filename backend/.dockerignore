@@ -1,0 +1,26 @@
+# The build context is backend/. Secrets, local state and private documents never
+# enter it, so they can't end up in an image layer.
+.env
+.env.*
+*.env
+!.env.example
+.venv/
+data/
+
+# Private RAG documents and OAuth credentials (also gitignored)
+src/ai/docs/*
+!src/ai/docs/.gitkeep
+src/oauth/*.json
+*.pem
+*.key
+
+# Not needed to serve the API
+src/tests/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+Dockerfile
+docker-compose.yml
+.dockerignore
