@@ -14,8 +14,31 @@
 
 ## Purpose
 
-Sign users in so the API can tell who is calling. Not yet required by any
-pipeline route (see `api/spec.md`).
+Sign users in so the API can tell who is calling: with Google (below), or with
+an email and password (routes in `api/accounts.py`, hashing in `passwords.py`). Forecast routes require sign-in unless
+`API_REQUIRE_SIGN_IN=false` (see `api/spec.md`).
+
+## Email/password accounts
+
+The frontend's sign-up and sign-in forms call these (as `/api/signup` and
+`/api/login` through the Vite proxy), with the field names they already send:
+
+```
+POST /signup  {firstName, lastName, email, password}  -> 201 {user}; 409 if the email is taken
+POST /login   {email, password}                       -> 200 {user} + session cookie; 401 otherwise
+```
+
+- Accounts live in `user_accounts` (migration 009): lower-cased email (unique),
+  names, and a salted scrypt hash (`passwords.py`, standard library). The plain
+  password is never stored or logged; a CHECK rejects anything that isn't a hash.
+- Login creates the same session as Google sign-in, with `sub` = `password:<id>`
+  and `provider: "password"`, so `current_user`, `/oauth/me`, `/oauth/logout`,
+  `/me/preferences` (keyed by `password:<id>`) and forecast quotas work unchanged.
+- A wrong email and a wrong password return the same 401 and take about as long
+  (an unknown email is checked against a dummy hash).
+- Passwords: 8-256 characters. Attempts: 10 per 15 minutes per client address
+  for sign-ups, and per address and email for sign-ins (429 with `Retry-After`).
+- No password reset or email verification yet.
 
 ## Provider and flow
 
@@ -52,6 +75,7 @@ POST /oauth/logout    -> ends the session
 | `provider.py` | `OAuthSettings.from_env()` (Google defaults), `pkce_challenge`, `Provider` protocol, `HttpProvider` (token exchange + userinfo via httpx) |
 | `sessions.py` | `SessionStore` protocol; `MemoryStore` (default, one process, thread-safe) and `DatabaseStore` (shared through PostgreSQL); `store_from_env` picks one from `OAUTH_SESSION_STORE` |
 | `routes.py` | The four routes above, plus `current_user` for other routes to require sign-in. Settings, store and provider are dependencies tests override; the store is created on first use, after `.env` is loaded |
+| `passwords.py` | `hash_password` / `verify_password`: salted scrypt in a self-describing `scrypt$n$r$p$salt$hash` string |
 
 ## Rules
 

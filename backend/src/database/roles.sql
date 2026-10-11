@@ -48,7 +48,7 @@ REVOKE INSERT ON :"schema".schema_migrations FROM finance_writer;
 -- sign-in state or anyone's preferences.
 GRANT SELECT ON ALL TABLES IN SCHEMA :"schema" TO finance_reader;
 REVOKE SELECT ON :"schema".oauth_pending_logins, :"schema".oauth_sessions,
-    :"schema".user_preferences FROM finance_reader;
+    :"schema".user_preferences, :"schema".user_accounts FROM finance_reader;
 
 -- Login roles. Re-running sets (rotates) their passwords.
 SELECT 'CREATE ROLE finance_api LOGIN IN ROLE finance_writer'

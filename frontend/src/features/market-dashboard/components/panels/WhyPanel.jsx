@@ -1,40 +1,31 @@
-// "Why it moved": the three largest explained moves for the selected asset.
-import { useState, useEffect, useMemo } from 'react';
+// "Why it moved": the three largest moves in the chart's timeframe, each with the
+// saved headlines from that trading session (if any were collected that day).
 import { strings } from '../../constants/strings.js';
-import { events } from '../../data/mockData.js';
 import { dateText, signed } from '../../lib/format.js';
-import { calculateMoves } from '../../lib/calculateMoves.js';
 import StatePanel from '../ui/StatePanel.jsx';
 
-export default function WhyPanel({ asset, history, selectedEvent, setSelectedEvent }) {
-  const [ids, setIds] = useState([]);
-  const available = useMemo(() => events.filter((e) => e.symbol === asset.symbol), [asset.symbol]);
-
-  useEffect(() => {
-    let active = true;
-    calculateMoves({ id: Date.now(), points: history.data || [], events: available })
-      .then((r) => { if (active) setIds(r.eventIds); });
-    return () => { active = false; };
-  }, [history.data, available]);
-
-  const biggest = useMemo(() => ids.map((id) => available.find((e) => e.id === id)).filter(Boolean), [ids, available]);
-
+export default function WhyPanel({ history, moves, intraday, selectedEvent, setSelectedEvent }) {
   return (
     <section id="why" aria-labelledby="why-heading" className="panel lg:col-span-4">
       <h2 id="why-heading">{strings.why}</h2>
-      <StatePanel name={strings.why} state={history}>
-        {biggest.length ? biggest.map((e) => (
+      <p className="small muted mb-2">{intraday ? strings.whyIntraday : strings.whyDaily}</p>
+      <StatePanel name={strings.why} state={history} emptyText={strings.noPrices}>
+        {moves.length ? moves.map((m) => (
           <button
-            key={e.id}
+            key={m.id}
             className="line-row w-full text-left block hover:opacity-75"
-            aria-pressed={selectedEvent === e.id}
-            onClick={() => { setSelectedEvent(e.id); document.getElementById('chart')?.scrollIntoView({ block: 'nearest' }); }}
+            aria-pressed={selectedEvent === m.id}
+            onClick={() => { setSelectedEvent(m.id); document.getElementById('chart')?.scrollIntoView({ block: 'nearest' }); }}
           >
             <span className="flex justify-between gap-2">
-              <strong>{dateText(e.t)} · {e.category}</strong>
-              <span className={`mono ${e.change >= 0 ? 'up' : 'down'}`}>{e.change >= 0 ? '▲' : '▼'} {signed(e.change)}</span>
+              <strong>{dateText(m.t)}</strong>
+              <span className={`mono ${m.change >= 0 ? 'up' : 'down'}`}>{m.change >= 0 ? '▲' : '▼'} {signed(m.change)}</span>
             </span>
-            <span className="block small muted mt-1">{e.explanation}</span>
+            <span className="block small muted mt-1">
+              {m.headlines.length
+                ? `${m.headlines[0].headline}${m.headlines.length > 1 ? ` (+${m.headlines.length - 1} more that day)` : ''}`
+                : strings.noMoveHeadline}
+            </span>
           </button>
         )) : <p className="muted">{strings.empty}</p>}
       </StatePanel>

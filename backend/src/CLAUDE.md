@@ -105,7 +105,7 @@ backend/
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
     ├── snowflake_rag/        # optional Snowflake vector index over stored chunks (RAG_BACKEND=snowflake)
     ├── database/             # migrations, repository, orchestration, backup.py, roles.sql, setup/docs
-    ├── oauth/                # Google OIDC sign-in (code + PKCE); sessions in memory or PostgreSQL
+    ├── oauth/                # Google OIDC sign-in (code + PKCE), email/password accounts; sessions in memory or PostgreSQL
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
 

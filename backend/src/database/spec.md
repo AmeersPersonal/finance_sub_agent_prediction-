@@ -15,6 +15,7 @@
 - [x] Authenticated account integration: `/me/preferences` (`api/`) reads and writes `user_preferences` for the signed-in user only, keyed by provider and subject id (`get_user_preferences`, `save_user_preferences`, `delete_user_preferences`).
 - [x] Refresh corrected price bars from equally/newer fetches; skip unchanged or older data.
 - [x] Archive price revisions: migration 008 copies every corrected or deleted bar to `price_bar_revisions` (append-only); `get_price_history_as_of` and `model_data.load_daily_prices_as_known` rebuild prices exactly as known at any moment.
+- [x] Don't archive float noise: Yahoo's adjusted history jitters by up to ~5e-7 between fetches, so every refresh rewrote and archived ~780 old bars per ticker. `save_price_bars` now treats prices within `PRICE_TOLERANCE` (1e-5 relative) as unchanged. The ~3,800 noise revisions already in the team database stay (the table is append-only).
 - [x] Retention, source usage permissions and access roles: `docs/retention-and-access.md`, `backup.py` (pg_dump with a 7/4/12 schedule) and `roles.sql` (least-privilege `finance_api` writer and `finance_analyst` reader logins).
 - [x] Shared sign-in sessions for several API workers: migration 007 (`oauth_pending_logins`, `oauth_sessions`, hashes only), used with `OAUTH_SESSION_STORE=database`.
 
@@ -49,6 +50,7 @@ frontend. Account integration remains separate work.
 | `migrations/006_snowflake_sync.sql` | `snowflake_synced_chunks`: which chunk/instrument pairs the Snowflake index holds, per embedding model |
 | `migrations/007_oauth_sessions.sql` | Shared OAuth pending logins and sessions (hashed ids), for `OAUTH_SESSION_STORE=database` |
 | `migrations/008_price_bar_revisions.sql` | Append-only archive of every price-bar version a refresh overwrote or a delete removed |
+| `migrations/009_user_accounts.sql` | Email/password accounts (`user_accounts`): unique lower-cased email, names, scrypt hash only |
 | `backup.py` | `python -m database.backup`: pg_dump to `backend/data/backups/`, prune by the retention schedule |
 | `roles.sql` | Least-privilege group and login roles; an administrator runs it with psql after migrations |
 | `SETUP.md` | Cloud connection, private environment configuration, and CLI commands |
@@ -74,6 +76,7 @@ frontend. Account integration remains separate work.
 | `snowflake_synced_chunks` | Chunk, instrument and embedding model already copied to the optional Snowflake index |
 | `price_bar_revisions` | Superseded price-bar versions with when they were fetched and superseded (append-only) |
 | `oauth_pending_logins`, `oauth_sessions` | Shared sign-in state for several API workers; SHA-256 hashes of state values and session ids |
+| `user_accounts` | Email/password accounts for `POST /signup` and `/login`: email, names, salted scrypt password hash (never the password) |
 
 The migration runner records names and checksums in `schema_migrations`, skips
 applied files, and rejects changes to their contents. Run it explicitly for each

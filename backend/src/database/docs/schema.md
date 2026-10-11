@@ -18,6 +18,7 @@ connect them. A table contains records, like rows in a spreadsheet.
 | `prediction_evidence` | Source excerpts linked to a forecast and optionally an individual output. |
 | `evaluations` | What actually happened later and whether an output's direction was correct. |
 | `user_preferences` | A user's selected strategy, age band, experience, and preferences. No account passwords. |
+| `user_accounts` | Email/password sign-in accounts: email, first and last name, and a one-way hash of the password (never the password itself). |
 
 `schema_migrations` is an additional bookkeeping table recording which schema
 updates have already been applied, with checksums to detect changed migration files.

@@ -6,7 +6,7 @@ The repo has two apps that are merged on `main` and still run separately:
 
 | App | Stack | What it does today |
 |---|---|---|
-| [`frontend/`](frontend/) | React 19, Vite, React Router, Tailwind 4 | Landing page, sign-in and sign-up screens, market dashboard, and a hypothetical scenarios page. Dashboard and scenarios use illustrative data. |
+| [`frontend/`](frontend/) | React 19, Vite, React Router, Tailwind 4 | Landing page, sign-in and sign-up screens, market dashboard, and a hypothetical scenarios page. The dashboard reads the backend API; scenarios use illustrative data. |
 | [`backend/`](backend/) | Python 3.12, FastAPI, PostgreSQL, Gemini | Thirteen trader personas (strategy × age band) vote on a ticker over the next N trading days: **up**, **down**, **flat**, or **unclear**. Calls are stored beside naive baselines and a linear regression, then scored after the horizon passes. |
 
 ## Frontend
@@ -18,6 +18,7 @@ npm install
 npm run dev       # http://localhost:5173
 npm run build
 npm run lint
+npm test          # Vitest: dashboard, sign-in pages and API client against a fake backend
 ```
 
 | Route | Page |
@@ -25,10 +26,10 @@ npm run lint
 | `/` | Landing page (Money Moves) |
 | `/Signin` | Sign-in screen. The form posts to a placeholder `/api/login`, then navigates to `/dashboard`. |
 | `/Signup` | Sign-up screen. The form posts to a placeholder `/api/signup`, then navigates to `/signin`. |
-| `/Dashboard` | Market Move Dashboard: story, chart, why it moved, forecast, calendar, news, and watchlist. Lazy-loaded. Data is mock, including the live-tick demo. |
+| `/Dashboard` | Market Move Dashboard: story, chart, why it moved, the personas' forecast and votes, news, and watchlist, all from the backend API (start it first; `/api` is proxied to port 8000). Lazy-loaded. |
 | `/scenarios` | Market Move Scenarios: move hypothetical factors and see an educational example. Not a forecast. |
 
-Dashboard notes, including how to swap the mock fetchers for real API calls, are in [`frontend/src/features/market-dashboard/README.md`](frontend/src/features/market-dashboard/README.md).
+Dashboard notes, including which API route feeds each panel, are in [`frontend/src/features/market-dashboard/README.md`](frontend/src/features/market-dashboard/README.md).
 
 ## Backend
 

@@ -283,8 +283,8 @@ class SyncRepo:
     def __init__(self, pending):
         self.pending, self.marked = list(pending), []
 
-    def chunks_to_sync(self, model, *, limit):
-        return self.pending[:limit]
+    def chunks_to_sync(self, model, *, limit, ticker=None):
+        return [r for r in self.pending if ticker in (None, r.get("ticker"))][:limit]
 
     def mark_chunks_synced(self, rows, model):
         self.marked.append((model, [r["chunk_id"] for r in rows]))
@@ -309,6 +309,12 @@ def test_sync_runs_batches_until_nothing_is_pending():
     assert index.batches == [[0, 1], [2, 3], [4]]
     assert repo.marked == [("m", [0, 1]), ("m", [2, 3]), ("m", [4])]
     assert sync(repo, index) == 0
+
+
+def test_sync_can_be_limited_to_one_ticker():
+    repo = SyncRepo([{"chunk_id": 1, "ticker": "A"}, {"chunk_id": 2, "ticker": "B"}])
+    assert sync(repo, SyncIndex(), ticker="B") == 1
+    assert repo.marked == [("m", [2])] and repo.pending == [{"chunk_id": 1, "ticker": "A"}]
 
 
 def test_sync_marks_nothing_when_snowflake_fails_and_respects_max_batches():

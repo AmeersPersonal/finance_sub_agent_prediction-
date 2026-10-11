@@ -1,0 +1,36 @@
+# Frontend tests (Vitest against a fake backend, no services needed), lint for the
+# files that pass it today, and a production build. The backend side of the API
+# contract runs in backend.yml (tests/test_frontend_contract.py).
+name: frontend
+
+on:
+  push:
+    paths: ["frontend/**", ".github/workflows/frontend.yml"]
+  pull_request:
+    paths: ["frontend/**", ".github/workflows/frontend.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies (from the lockfile)
+        run: npm ci
+      - name: Tests
+        run: npm test
+      - name: Lint the dashboard, auth client and tests
+        # The landing/sign-in pages and App.jsx still have older lint errors; widen this once they're fixed.
+        run: npx eslint src/features src/lib src/test src/pages/auth-pages.test.jsx vite.config.js
+      - name: Build
+        run: npm run build
