@@ -370,6 +370,8 @@ def test_snowflake_sync_tracking_is_per_chunk_ticker_and_model(db):
     assert repo.mark_chunks_synced(pending[:1], "model-a") == 0
     assert len(repo.chunks_to_sync("model-a")) == 1
     assert len(repo.chunks_to_sync("model-b")) == 2  # a new embedding model re-syncs everything
+    assert [r["ticker"] for r in repo.chunks_to_sync("model-b", ticker="PEER")] == ["PEER"]
+    assert repo.mark_chunks_synced([], "model-a") == 0
 
 
 def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):

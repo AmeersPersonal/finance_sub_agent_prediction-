@@ -257,33 +257,43 @@ class DatabaseRepository:
         Unchanged bars are skipped. Provider/adjustment bases remain separate.
         The returned count includes both inserted and corrected records.
         """
+        bars = list(bars)
+        if not bars:
+            return 0
         saved = 0
         with self._transaction():
             instrument_id = self._instrument(symbol)
-            for bar in bars:
-                row = self.connection.execute(
-                    """INSERT INTO price_bars
-                    (instrument_id, bar_at, interval, provider, adjustment_basis,
-                     open, high, low, close, volume, fetched_at, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (instrument_id, bar_at, interval, provider, adjustment_basis)
-                    DO UPDATE SET open = EXCLUDED.open, high = EXCLUDED.high,
-                                  low = EXCLUDED.low, close = EXCLUDED.close,
-                                  volume = EXCLUDED.volume, fetched_at = EXCLUDED.fetched_at,
-                                  metadata = EXCLUDED.metadata
-                    WHERE EXCLUDED.fetched_at >= price_bars.fetched_at
-                      AND (price_bars.open, price_bars.high, price_bars.low,
-                           price_bars.close, price_bars.volume, price_bars.metadata)
-                          IS DISTINCT FROM
-                          (EXCLUDED.open, EXCLUDED.high, EXCLUDED.low,
-                           EXCLUDED.close, EXCLUDED.volume, EXCLUDED.metadata)
-                    RETURNING instrument_id""",
-                    (instrument_id, bar["bar_at"], interval, provider, adjustment_basis,
-                     bar.get("open"), bar.get("high"), bar.get("low"), bar["close"],
-                     bar.get("volume"), bar.get("fetched_at") or datetime.now(timezone.utc),
-                     _json(bar.get("metadata") or {})),
-                ).fetchone()
-                saved += row is not None
+            # One pipelined batch instead of a round trip per bar: a 5-year refresh is
+            # ~1,600 bars, which took minutes against a remote database.
+            cursor = self.connection.cursor()
+            cursor.executemany(
+                """INSERT INTO price_bars
+                (instrument_id, bar_at, interval, provider, adjustment_basis,
+                 open, high, low, close, volume, fetched_at, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (instrument_id, bar_at, interval, provider, adjustment_basis)
+                DO UPDATE SET open = EXCLUDED.open, high = EXCLUDED.high,
+                              low = EXCLUDED.low, close = EXCLUDED.close,
+                              volume = EXCLUDED.volume, fetched_at = EXCLUDED.fetched_at,
+                              metadata = EXCLUDED.metadata
+                WHERE EXCLUDED.fetched_at >= price_bars.fetched_at
+                  AND (price_bars.open, price_bars.high, price_bars.low,
+                       price_bars.close, price_bars.volume, price_bars.metadata)
+                      IS DISTINCT FROM
+                      (EXCLUDED.open, EXCLUDED.high, EXCLUDED.low,
+                       EXCLUDED.close, EXCLUDED.volume, EXCLUDED.metadata)
+                RETURNING instrument_id""",
+                [(instrument_id, bar["bar_at"], interval, provider, adjustment_basis,
+                  bar.get("open"), bar.get("high"), bar.get("low"), bar["close"],
+                  bar.get("volume"), bar.get("fetched_at") or datetime.now(timezone.utc),
+                  _json(bar.get("metadata") or {})) for bar in bars],
+                returning=True,
+            )
+            # One result set per bar; unchanged bars return no row.
+            while True:
+                saved += cursor.fetchone() is not None
+                if not cursor.nextset():
+                    break
         return saved
 
     def save_fundamental_snapshot(self, symbol: str, payload: dict[str, Any], *,
@@ -308,13 +318,15 @@ class DatabaseRepository:
 
     def store_chunks(self, document_id: int, chunks: Iterable[str]) -> None:
         """Save deterministic passages once; later runs reuse their IDs."""
+        rows = [(document_id, index, text) for index, text in enumerate(chunks)]
+        if not rows:
+            return
         with self._transaction():
-            for index, text in enumerate(chunks):
-                self.connection.execute(
-                    """INSERT INTO document_chunks (document_id, chunk_index, content_text)
-                    VALUES (%s, %s, %s) ON CONFLICT (document_id, chunk_index) DO NOTHING""",
-                    (document_id, index, text),
-                )
+            self.connection.cursor().executemany(
+                """INSERT INTO document_chunks (document_id, chunk_index, content_text)
+                VALUES (%s, %s, %s) ON CONFLICT (document_id, chunk_index) DO NOTHING""",
+                rows,
+            )
 
     # Latest version per source URL that the instrument's forecast could have seen.
     # Parameters: symbol, cutoff, cutoff, since, since, role, role.
@@ -415,8 +427,10 @@ class DatabaseRepository:
             kept.append(row)
         return kept
 
-    def chunks_to_sync(self, embedding_model: str, *, limit: int = 500) -> list[dict]:
-        """Chunk/ticker pairs not yet copied to the Snowflake index for this model."""
+    def chunks_to_sync(self, embedding_model: str, *, limit: int = 500,
+                       ticker: str | None = None) -> list[dict]:
+        """Chunk/ticker pairs not yet copied to the Snowflake index for this model
+        (only `ticker`'s when given)."""
         with self._transaction():
             return self.connection.execute(
                 """SELECT c.id AS chunk_id, d.id AS document_id, i.id AS instrument_id,
@@ -427,21 +441,27 @@ class DatabaseRepository:
                 JOIN instruments i ON i.id = di.instrument_id
                 LEFT JOIN snowflake_synced_chunks s ON s.chunk_id = c.id
                     AND s.instrument_id = i.id AND s.embedding_model = %s
-                WHERE s.chunk_id IS NULL
+                WHERE s.chunk_id IS NULL AND (%s::text IS NULL OR i.symbol = %s)
                 ORDER BY c.id, i.id LIMIT %s""",
-                (embedding_model, limit),
+                (embedding_model, ticker, ticker, limit),
             ).fetchall()
 
     def mark_chunks_synced(self, rows: Iterable[dict], embedding_model: str) -> int:
+        params = [(row["chunk_id"], row["instrument_id"], embedding_model) for row in rows]
+        if not params:
+            return 0
         marked = 0
         with self._transaction():
-            for row in rows:
-                result = self.connection.execute(
-                    """INSERT INTO snowflake_synced_chunks (chunk_id, instrument_id, embedding_model)
-                    VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING chunk_id""",
-                    (row["chunk_id"], row["instrument_id"], embedding_model),
-                ).fetchone()
-                marked += result is not None
+            cursor = self.connection.cursor()
+            cursor.executemany(
+                """INSERT INTO snowflake_synced_chunks (chunk_id, instrument_id, embedding_model)
+                VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING chunk_id""",
+                params, returning=True,
+            )
+            while True:
+                marked += cursor.fetchone() is not None
+                if not cursor.nextset():
+                    break
         return marked
 
     def save_evidence(self, run_id: str, passage: dict, *, retrieved_at: datetime,

@@ -3,7 +3,7 @@
 ## TODOS
 
 - [x] Run `python -m snowflake_rag setup` and `sync` against the team's Snowflake account (HACK_KNIGHT.RAG, Oct 2026).
-- [x] Keep the index current: every forecast syncs pending chunks (up to `SYNC_BATCHES_PER_FORECAST` batches) before it searches, so it sees the documents its own refresh just stored. Run `sync` by hand after bulk imports.
+- [x] Keep the index current: every forecast syncs its own ticker's pending chunks (up to `SYNC_BATCHES_PER_FORECAST` batches) before it searches, so it sees the documents its own refresh just stored. Other tickers' backlog (e.g. after `POST /stocks/{ticker}/refresh`) waits for their next forecast or `python -m snowflake_rag sync`.
 - [x] Move from the deprecated `EMBED_TEXT_1024` to `AI_EMBED` (same vectors; no re-embed needed).
 - [ ] Compare retrieval quality with and without `RAG_BACKEND=snowflake` using `prediction_evidence.metadata->>'retrieval'` and `cited_by`, before treating vector search as an improvement.
 - [ ] If `RAG_CHUNKS` grows past a few million rows, cluster it by `TICKER` or move to a Cortex Search Service.
@@ -32,7 +32,7 @@ sources -> database.service -> PostgreSQL documents + document_chunks
 python -m snowflake_rag sync:  chunks_to_sync -> RAG_CHUNKS_STAGE -> MERGE + AI_EMBED -> RAG_CHUNKS
                                -> mark_chunks_synced (PostgreSQL)
 database.service._retrieve (RAG_BACKEND=snowflake):
-  sync (up to 5 batches)      index the chunks this forecast's refresh just stored
+  sync(ticker, <= 2 batches)  index the chunks this forecast's refresh just stored
 per strategy and evidence role:
   VectorIndex.search          top 4 x limit chunk IDs, pre-filtered by ticker, cutoff, window, role
   passages_by_chunk_ids       reload from PostgreSQL; superseded/late/other-role chunks dropped
