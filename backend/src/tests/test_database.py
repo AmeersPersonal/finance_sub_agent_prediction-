@@ -574,6 +574,27 @@ def test_user_preferences_upsert_and_delete(db):
     assert repo.delete_user_preferences(account) and not repo.delete_user_preferences(account)
 
 
+def test_price_noise_is_not_a_correction_but_real_changes_are(db):
+    repo = DatabaseRepository(db)
+    at = datetime(2026, 10, 1, 4, tzinfo=timezone.utc)
+    first = {"bar_at": at, "open": 229.8, "high": 231.0, "low": 228.5, "close": 230.12345, "volume": 1000, "fetched_at": at}
+    later = lambda **change: {**first, "fetched_at": at + timedelta(days=1), **change}  # noqa: E731
+    save = lambda bar: repo.save_price_bars("TEST", [bar], interval="1d", adjustment_basis="total_return")  # noqa: E731
+    revisions = lambda: db.execute("SELECT count(*) AS n FROM price_bar_revisions").fetchone()["n"]  # noqa: E731
+    assert save(first) == 1
+    # Yahoo's float jitter (5e-7 relative, the largest seen) on every price: unchanged, nothing archived.
+    jitter = 1 + 5.2e-7
+    assert save(later(open=229.8 * jitter, high=231.0 / jitter, low=228.5 * jitter, close=230.12345 * jitter)) == 0
+    assert revisions() == 0
+    assert float(repo.get_price_history("TEST")[0]["close"]) == 230.12345  # the first value is kept
+    # A small dividend re-adjustment (0.08%), a volume change and a newly known open are real.
+    assert save(later(close=230.12345 * 0.9992)) == 1
+    assert save(later(close=230.12345 * 0.9992, volume=1200, fetched_at=at + timedelta(days=2))) == 1
+    assert save({**first, "open": None, "fetched_at": at + timedelta(days=3)}) == 1
+    assert save({**first, "fetched_at": at + timedelta(days=4)}) == 1  # the open comes back
+    assert revisions() == 4
+
+
 def test_price_corrections_are_archived_and_replayable(db):
     from database.model_data import load_daily_prices_as_known
 

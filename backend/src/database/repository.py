@@ -33,6 +33,20 @@ def persona_output_key(persona) -> str:
     return f"persona:{persona.persona_id}:{persona.mode}"
 
 
+# A refreshed price only counts as a correction past this relative change. Yahoo's
+# adjusted history jitters by up to ~5e-7 between fetches (float noise); real
+# corrections (splits, dividend re-adjustments, fixed bad bars) are ~1e-4 or more.
+# Without it every refresh rewrote and archived ~780 old bars per ticker.
+PRICE_TOLERANCE = 1e-5
+
+
+def _moved(column: str) -> str:
+    """SQL: the saved and incoming price differ by more than PRICE_TOLERANCE, or one is missing."""
+    old, new = f"price_bars.{column}", f"EXCLUDED.{column}"
+    return (f"(({old} IS NULL) <> ({new} IS NULL) OR abs({old} - {new}) > "
+            f"{PRICE_TOLERANCE} * greatest(abs({old}), abs({new})))")
+
+
 class DatabaseRepository:
     """A repository using a psycopg connection configured with dict_row."""
 
@@ -254,7 +268,9 @@ class DatabaseRepository:
                         provider: str = "yfinance", adjustment_basis: str = "raw") -> int:
         """Insert bars or refresh corrected values from an equally/newer fetch.
 
-        Unchanged bars are skipped. Provider/adjustment bases remain separate.
+        Unchanged bars are skipped: prices within `PRICE_TOLERANCE` of the saved ones
+        count as unchanged, so float noise isn't archived as a correction. Volume and
+        metadata compare exactly. Provider/adjustment bases remain separate.
         The returned count includes both inserted and corrected records.
         """
         bars = list(bars)
@@ -277,11 +293,9 @@ class DatabaseRepository:
                               volume = EXCLUDED.volume, fetched_at = EXCLUDED.fetched_at,
                               metadata = EXCLUDED.metadata
                 WHERE EXCLUDED.fetched_at >= price_bars.fetched_at
-                  AND (price_bars.open, price_bars.high, price_bars.low,
-                       price_bars.close, price_bars.volume, price_bars.metadata)
-                      IS DISTINCT FROM
-                      (EXCLUDED.open, EXCLUDED.high, EXCLUDED.low,
-                       EXCLUDED.close, EXCLUDED.volume, EXCLUDED.metadata)
+                  AND ((price_bars.volume, price_bars.metadata)
+                          IS DISTINCT FROM (EXCLUDED.volume, EXCLUDED.metadata)
+                       OR """ + " OR ".join(_moved(column) for column in ("open", "high", "low", "close")) + """)
                 RETURNING instrument_id""",
                 [(instrument_id, bar["bar_at"], interval, provider, adjustment_basis,
                   bar.get("open"), bar.get("high"), bar.get("low"), bar["close"],
