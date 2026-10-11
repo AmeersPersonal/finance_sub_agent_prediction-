@@ -691,7 +691,7 @@ function StoryChart() {
        Enter      on a day with a big move, open its explanation              */
   const onPlotKey = (e) => {
     const n = SAMPLE.values.length;
-    let next = cursor;
+    let next;
     if (e.key === "ArrowRight") next = cursor === null ? 0 : Math.min(n - 1, cursor + 1);
     else if (e.key === "ArrowLeft") next = cursor === null ? n - 1 : Math.max(0, cursor - 1);
     else if (e.key === "Home") next = 0;

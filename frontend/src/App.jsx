@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import {Routes, Route} from 'react-router-dom'
 import Landing from "./pages/Landing"
 import Signin from "./pages/Signin"
@@ -8,7 +7,6 @@ import Scenarios from "./pages/Scenarios"
 import './App.css'
 
 function App() {
-  const [count, setCount] = useState(0)
   
   return (
     <>
