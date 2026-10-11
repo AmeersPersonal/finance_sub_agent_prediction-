@@ -7,6 +7,7 @@ Error messages never include the account, user, key path or driver diagnostics.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 from contextlib import contextmanager
@@ -28,6 +29,26 @@ def enabled() -> bool:
     return (os.getenv("RAG_BACKEND") or "postgres").strip().lower() == "snowflake"
 
 
+def materialize_key_from_env(directory: str = "/tmp") -> str | None:
+    """Hosting without a persistent disk (AWS Lambda): SNOWFLAKE_PRIVATE_KEY_B64 holds the
+    base64 of the .p8 key file. Write it once (owner-only) and point
+    SNOWFLAKE_PRIVATE_KEY_FILE at it. Returns the path, or None when not configured."""
+    encoded = (os.getenv("SNOWFLAKE_PRIVATE_KEY_B64") or "").strip()
+    if not encoded:
+        return None
+    path = os.path.join(directory, "snowflake_rsa_key.p8")
+    if not os.path.exists(path):
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise SnowflakeError("SNOWFLAKE_PRIVATE_KEY_B64 is not valid base64.") from None
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+    os.environ["SNOWFLAKE_PRIVATE_KEY_FILE"] = path
+    return path
+
+
 @dataclass(frozen=True)
 class SnowflakeSettings:
     account: str
@@ -42,6 +63,7 @@ class SnowflakeSettings:
 
     @classmethod
     def from_env(cls) -> SnowflakeSettings:
+        materialize_key_from_env()
         missing = [name for name in REQUIRED if not (os.getenv(name) or "").strip()]
         if missing:
             raise SnowflakeError(f"Set {', '.join(missing)} in the backend environment first.")

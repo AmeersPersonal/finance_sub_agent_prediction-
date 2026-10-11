@@ -30,6 +30,8 @@ explanations. No real trades are executed.
 backend/
 ├── README.md       # setup and run commands; points to src/spec.md and the database guides
 ├── Dockerfile      # the API image (src/requirements-api.lock), one worker, non-root
+├── Dockerfile.lambda      # the same API as an AWS Lambda container image (Web Adapter); deploy/aws/
+├── requirements-lambda.txt  # boto3, for the Lambda image only (starts the forecast worker)
 ├── docker-compose.yml  # local stack: PostgreSQL + migrations + API
 ├── .dockerignore   # keeps .env, data/, tests and private documents out of the image
 ├── .env            # real secrets, gitignored, never read or print

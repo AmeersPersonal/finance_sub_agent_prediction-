@@ -1,0 +1,41 @@
+# The backend API as an AWS Lambda container image. Build context: backend/.
+# `sam build` runs this (template.yaml, Metadata: Dockerfile); deploy/aws/deploy.ps1
+# and deploy.sh drive it. To check it locally:
+#
+#   docker build -f Dockerfile.lambda -t finance-lambda .      # from backend/
+#
+# Same app and same hash-checked requirements as Dockerfile (no torch/sklearn/LightGBM),
+# run by the AWS Lambda Web Adapter: it starts the unchanged `uvicorn api.main:app`,
+# turns Function URL requests into HTTP calls to it, and forwards non-HTTP events
+# (the signed forecast-worker invocation) to /internal/lambda-events.
+# Secrets come from the function's environment at run time; none are baked in.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+COPY src/requirements-api.lock /tmp/requirements-api.lock
+COPY requirements-lambda.txt /tmp/requirements-lambda.txt
+RUN pip install --require-hashes -r /tmp/requirements-api.lock \
+    && pip install -r /tmp/requirements-lambda.txt \
+    && rm /tmp/requirements-api.lock /tmp/requirements-lambda.txt
+
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
+
+WORKDIR /app/src
+COPY src/ ./
+# /tmp is the only writable path on Lambda. The BLS cache lives in /app/data/cache
+# (ai/feeds.py), so point /app/data at /tmp; Yahoo's and other libraries' caches
+# follow HOME.
+RUN ln -s /tmp /app/data
+ENV HOME=/tmp XDG_CACHE_HOME=/tmp/.cache
+
+ENV AWS_LWA_PORT=8000 \
+    AWS_LWA_READINESS_CHECK_PATH=/docs \
+    AWS_LWA_PASS_THROUGH_PATH=/internal/lambda-events \
+    JOBS_BACKEND=lambda
+EXPOSE 8000
+# One worker per instance; Lambda scales by adding instances.
+CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

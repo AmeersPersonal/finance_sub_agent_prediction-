@@ -59,6 +59,7 @@ backend/
     ├── api/
     │   ├── main.py           # the one FastAPI app: forecasts (sign-in, rate limit, jobs), reads, /score, /me
     │   ├── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
+    │   ├── lambda_jobs.py    # JOBS_BACKEND=lambda: PostgreSQL-backed jobs, signed worker events (AWS Lambda)
     │   └── accounts.py       # POST /signup, /login: email/password accounts, same session as Google
     ├── ai/
     │   ├── main.py           # predict(): fetch -> live quote? -> sentiment -> personas -> aggregate
@@ -158,7 +159,9 @@ optional `API_CORS_ORIGINS` for local frontend development, and for API sign-in
 Optional: `RAG_BACKEND=snowflake` with the `SNOWFLAKE_*` key-pair settings,
 `ALT_LLM_BASE_URL` / `ALT_LLM_MODEL` / `ALT_LLM_API_KEY` (a second,
 OpenAI-compatible model provider), `LIVE_FEED=finnhub` with `FINNHUB_API_KEY`,
-`OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose.
+`OAUTH_SESSION_STORE=database`, and `POSTGRES_PASSWORD` for Docker Compose. AWS Lambda
+hosting (`Dockerfile.lambda`, `deploy/aws/`) sets `JOBS_BACKEND=lambda` and `JOB_SIGNING_KEY`
+so forecast jobs live in PostgreSQL (`api/lambda_jobs.py`).
 
 ## Hard rules
 

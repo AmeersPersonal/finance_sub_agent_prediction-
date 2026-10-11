@@ -1,0 +1,505 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Market Moves on AWS. The FastAPI backend as a container-image Lambda function
+  (Function URL), and the Vite frontend on S3, both behind one CloudFront
+  distribution: /api/* goes to the function (prefix stripped, like the Vite dev
+  proxy), everything else is the single-page app. Same origin, so the sign-in
+  cookie needs no CORS. Build and deploy with deploy/aws/deploy.ps1.
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: PostgreSQL connection URI (DATABASE_URL), with the TLS setting your provider gives you.
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Description: GEMINI_API_KEY, used for forecasts.
+  JobSigningKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Random secret (16+ characters) that signs the forecast worker's events (JOB_SIGNING_KEY).
+  OAuthClientId:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Google OAuth client id. Leave empty to use email/password sign-in only.
+  OAuthClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Google OAuth client secret.
+  OAuthRedirectUri:
+    Type: String
+    Default: ''
+    Description: >
+      https://<site domain>/api/oauth/callback. The domain only exists after the first
+      deploy (see the SiteUrl output), so set this on a second deploy.
+  GeminiModel:
+    Type: String
+    Default: ''
+    Description: Optional GEMINI_MODEL override.
+  GeminiModelStrong:
+    Type: String
+    Default: ''
+  DomainName:
+    Type: String
+    Default: ''
+    Description: Custom domain for the site (for example marketmoves.nyc). Empty uses the *.cloudfront.net name.
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate for DomainName. It must be in us-east-1 (a CloudFront requirement).
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Route 53 hosted zone for DomainName. When set, the stack creates the A/AAAA alias records.
+  RagBackend:
+    Type: String
+    Default: ''
+    Description: RAG_BACKEND, empty for PostgreSQL keyword search or snowflake.
+  SnowflakeAccount:
+    Type: String
+    Default: ''
+  SnowflakeUser:
+    Type: String
+    Default: ''
+  SnowflakeRole:
+    Type: String
+    Default: ''
+  SnowflakeWarehouse:
+    Type: String
+    Default: ''
+  SnowflakeDatabase:
+    Type: String
+    Default: ''
+  SnowflakeSchema:
+    Type: String
+    Default: ''
+  SnowflakeEmbedModel:
+    Type: String
+    Default: ''
+  SnowflakePrivateKeyB64:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: >
+      Base64 of the .p8 key file that SNOWFLAKE_PRIVATE_KEY_FILE points to locally. The
+      function writes it to /tmp at run time (snowflake_rag/connection.py).
+  SnowflakePrivateKeyPassphrase:
+    Type: String
+    NoEcho: true
+    Default: ''
+  SecUserAgent:
+    Type: String
+    Default: ''
+    Description: SEC_USER_AGENT for SEC filings (an application name and contact email).
+  AltLlmBaseUrl:
+    Type: String
+    Default: ''
+  AltLlmModel:
+    Type: String
+    Default: ''
+  AltLlmApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+  LiveFeed:
+    Type: String
+    Default: ''
+  FinnhubApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+  StaticEgress:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      'true' runs the function in a VPC whose only way out is a NAT gateway with one
+      Elastic IP (the StaticEgressIp output), so a database with an IP allow list can
+      accept it as a /32. Costs about $33/month while deployed.
+  PredictionsPerHour:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    Description: Forecasts per signed-in user per hour, per Lambda instance (API_PREDICTIONS_PER_HOUR).
+
+Conditions:
+  UseStaticEgress: !Equals [!Ref StaticEgress, 'true']
+  HasDomain: !And
+    - !Not [!Equals [!Ref DomainName, '']]
+    - !Not [!Equals [!Ref CertificateArn, '']]
+  HasZone: !And
+    - !Condition HasDomain
+    - !Not [!Equals [!Ref HostedZoneId, '']]
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      # A fixed name lets the policy below name the function without a circular reference.
+      FunctionName: !Sub '${AWS::StackName}-api'
+      PackageType: Image
+      Architectures: [x86_64]
+      MemorySize: 1024
+      Timeout: 900  # the forecast worker runs here; a normal request answers in well under a minute
+      FunctionUrlConfig:
+        AuthType: NONE  # the app enforces sign-in; signed events guard /internal/lambda-events
+        InvokeMode: BUFFERED
+      VpcConfig: !If
+        - UseStaticEgress
+        - SecurityGroupIds: [!Ref FunctionSecurityGroup]
+          SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+        - !Ref AWS::NoValue
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0  # a failed worker marks its job failed; it is never run twice
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole  # network interfaces; harmless when StaticEgress is false
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction  # starts the forecast worker (api/lambda_jobs.py)
+              Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-api'
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          GEMINI_API_KEY: !Ref GeminiApiKey
+          GEMINI_MODEL: !Ref GeminiModel
+          GEMINI_MODEL_STRONG: !Ref GeminiModelStrong
+          JOB_SIGNING_KEY: !Ref JobSigningKey
+          OAUTH_CLIENT_ID: !Ref OAuthClientId
+          OAUTH_CLIENT_SECRET: !Ref OAuthClientSecret
+          # With a custom domain the redirect URI is known up front; otherwise it's the parameter.
+          OAUTH_REDIRECT_URI: !If [HasDomain, !Sub 'https://${DomainName}/api/oauth/callback', !Ref OAuthRedirectUri]
+          RAG_BACKEND: !Ref RagBackend
+          SNOWFLAKE_ACCOUNT: !Ref SnowflakeAccount
+          SNOWFLAKE_USER: !Ref SnowflakeUser
+          SNOWFLAKE_ROLE: !Ref SnowflakeRole
+          SNOWFLAKE_WAREHOUSE: !Ref SnowflakeWarehouse
+          SNOWFLAKE_DATABASE: !Ref SnowflakeDatabase
+          SNOWFLAKE_SCHEMA: !Ref SnowflakeSchema
+          SNOWFLAKE_EMBED_MODEL: !Ref SnowflakeEmbedModel
+          # The key file's contents; SNOWFLAKE_PRIVATE_KEY_FILE is set at run time to where they are written.
+          SNOWFLAKE_PRIVATE_KEY_B64: !Ref SnowflakePrivateKeyB64
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: !Ref SnowflakePrivateKeyPassphrase
+          SEC_USER_AGENT: !Ref SecUserAgent
+          ALT_LLM_BASE_URL: !Ref AltLlmBaseUrl
+          ALT_LLM_MODEL: !Ref AltLlmModel
+          ALT_LLM_API_KEY: !Ref AltLlmApiKey
+          LIVE_FEED: !Ref LiveFeed
+          FINNHUB_API_KEY: !Ref FinnhubApiKey
+          OAUTH_POST_LOGIN_REDIRECT: /Dashboard
+          OAUTH_SESSION_STORE: database  # instances share no memory
+          OAUTH_COOKIE_SECURE: 'true'
+          JOBS_BACKEND: lambda
+          API_REQUIRE_SIGN_IN: 'true'
+          API_PREDICTIONS_PER_HOUR: !Ref PredictionsPerHour
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: ./backend
+      DockerTag: latest
+
+  # --- fixed outbound IP (StaticEgress=true) -----------------------------------
+  # Function in two private subnets -> NAT gateway in a public subnet -> internet
+  # gateway. Everything the function calls (the database, Gemini, Yahoo) leaves from
+  # NatElasticIp. The function URL still works: it is not routed through the VPC.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: UseStaticEgress
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: UseStaticEgress
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  NatElasticIp:
+    Type: AWS::EC2::EIP
+    Condition: UseStaticEgress
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: UseStaticEgress
+    Properties:
+      AllocationId: !GetAtt NatElasticIp.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: UseStaticEgress
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: UseStaticEgress
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: UseStaticEgress
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: UseStaticEgress
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: UseStaticEgress
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: UseStaticEgress
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  FunctionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseStaticEgress
+    Properties:
+      GroupDescription: Market Moves API function; no inbound, all outbound
+      VpcId: !Ref Vpc
+
+  # Since late 2025 a public function URL needs both permissions.
+  ApiFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-site'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Deep links (/Dashboard, /sign-in) are client routes: serve index.html for any
+  # path without a file extension. Done here, not as an error page, so a 403 or
+  # 404 from the API passes through untouched.
+  SpaRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-spa'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Serve index.html for client-side routes
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var last = uri.substring(uri.lastIndexOf('/') + 1);
+          if (last.indexOf('.') === -1) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  # /api/stocks/AAPL/history -> /stocks/AAPL/history (the Vite proxy's rewrite).
+  ApiPrefixFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-api-prefix'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Strip the /api prefix before the request reaches the function
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          request.uri = request.uri.replace(/^\/api/, '') || '/';
+          return request;
+        }
+
+  SiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} site and API'
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Aliases: !If [HasDomain, [!Ref DomainName], !Ref 'AWS::NoValue']
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !Select [2, !Split ['/', !GetAtt ApiFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginReadTimeout: 60  # a synchronous POST /predictions can take a minute
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRewriteFunction.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ApiPrefixFunction.FunctionARN
+
+  SiteAliasRecordA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront's fixed zone id
+
+  SiteAliasRecordAAAA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}'
+
+Outputs:
+  SiteUrl:
+    Description: Open this. The dashboard is at /Dashboard.
+    Value: !If [HasDomain, !Sub 'https://${DomainName}', !Sub 'https://${SiteDistribution.DomainName}']
+  CloudFrontDomain:
+    Description: Point DomainName at this (a CNAME/ALIAS) when the DNS isn't in Route 53.
+    Value: !GetAtt SiteDistribution.DomainName
+  OAuthRedirectUri:
+    Description: Authorised redirect URI for the Google OAuth client.
+    Value: !If
+      - HasDomain
+      - !Sub 'https://${DomainName}/api/oauth/callback'
+      - !Sub 'https://${SiteDistribution.DomainName}/api/oauth/callback'
+  SiteBucketName:
+    Description: The frontend build is synced here.
+    Value: !Ref SiteBucket
+  DistributionId:
+    Description: Invalidated after each frontend upload.
+    Value: !Ref SiteDistribution
+  StaticEgressIp:
+    Condition: UseStaticEgress
+    Description: Allow-list this address as /32 in the database's IP allow list.
+    Value: !Ref NatElasticIp
+  FunctionUrl:
+    Description: The API's direct URL (the site proxies it at /api).
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl

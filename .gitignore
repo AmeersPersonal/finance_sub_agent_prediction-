@@ -102,3 +102,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AWS SAM build output and local deploy settings (deploy/aws/)
+.aws-sam/
+samconfig.toml
+samconfig.yaml

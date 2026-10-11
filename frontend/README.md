@@ -16,6 +16,20 @@ The dashboard and sign-in pages need the backend API running for real data
 (`uvicorn api.main:app` from `backend/src/`). Set `API_TARGET` to proxy somewhere other
 than `http://127.0.0.1:8000`, or `VITE_API_BASE` to call an API URL directly.
 
+## Deploying on Vercel
+
+Import the repo with **Root Directory** `frontend`; [`vercel.json`](vercel.json) does the rest
+(Vite build, `dist`). It has two rewrites, mirroring the CloudFront setup in `template.yaml`:
+
+- `/api/*` proxies to the backend with the prefix stripped, so the session cookie stays on
+  the site's own origin and there is no CORS. Replace `REPLACE-WITH-API-HOST` in
+  `vercel.json` with the API host (the SAM stack's API Function URL host, no scheme).
+- Every other path falls back to `index.html`, so React Router deep links such as
+  `/Dashboard` and `/Signin` work on refresh.
+
+With Google sign-in, the authorised redirect URI is `https://<your-vercel-domain>/api/oauth/callback`,
+and the backend's `OAUTH_REDIRECT_URI` must match it.
+
 ## Layout
 
 | Path | What it is |

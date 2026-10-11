@@ -11,6 +11,7 @@ under `backend/`.
 |---|---|
 | `frontend/` | React 19 + Vite app: landing, sign-in/sign-up, the market dashboard (`src/features/market-dashboard`), scenarios |
 | `backend/` | Python 3.12 FastAPI app (`backend/src/api/main.py`), AI trader personas, PostgreSQL storage, optional Snowflake retrieval |
+| `template.yaml`, `deploy/aws/` | AWS deployment: SAM template (API as a container-image Lambda, frontend on S3 + CloudFront) and the build/deploy scripts; see `deploy/aws/README.md` |
 | `.github/workflows/` | CI: `backend.yml` (pytest incl. PostgreSQL, Docker image), `frontend.yml` (Vitest, eslint, build) |
 
 Every folder under `backend/src/` has a `spec.md` (TODOs, purpose, files, rules). Keep
