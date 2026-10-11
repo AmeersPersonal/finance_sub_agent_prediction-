@@ -1,0 +1,54 @@
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+QQQ: No earnings dates found, symbol may be delisted
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+SPY: No earnings dates found, symbol may be delisted
+IWM: No earnings dates found, symbol may be delisted
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: IWM"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+Replay: 500 forecasts saved, 0 already done, 0 failed of 500 requested
+
+Scored 500 forecasts (0 still pending)
+
+Accuracy by horizon, 3-way (down / flat / up), same rows for every column:
+  horizon      n  days  personas  always-up  momentum  regression
+  1d         250    10     35.2%      37.6%     38.8%       38.4%
+  5d         250    10     24.0%      36.4%     28.8%       38.0%
+
+Per strategy, share of persona votes that were right:
+  day_trader     32.0%
+  index_options  29.6%
+  long_term      28.4%
+
+Pre-adjusted strategy weights (pass to main.py --weights):
+  day_trader=1.063,index_options=0.987,long_term=0.95
+  saved to C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\replay-weights.json
+
+Network (model B), walk-forward on 150 held-out forecasts from 2026-10-02:
+  baselines on those rows: personas 36.7%  always_up 50.0%  momentum 40.0%  linear_regression 42.7%
+  model         accuracy  log-loss  (prior 1.1743)
+  weights_auto     26.7%    1.1200
+  logistic         29.3%    1.2585
+  mlp              50.0%    1.0696
+  saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\stacker-replay-logistic-20261011T020239993234Z.joblib
+  saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\stacker-replay-mlp-20261011T020240223804Z.joblib
+
+Read this as a pipeline check and a weight pre-adjustment, not live accuracy: only prices
+were backdated, the LLM may have seen the period, and tickers on one day are correlated.
+Always-up is the bar.

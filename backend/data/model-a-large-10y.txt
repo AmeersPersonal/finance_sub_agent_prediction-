@@ -1,0 +1,45 @@
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: BK"}}}
+$BK: No data found, symbol may be delisted
+BK: skipped: no price history
+MLP device: cuda
+
+Model A, 1-day horizon, absolute target: 100 tickers, 49,300 test rows from 2024-10-21 (refit every 21 dates)
+Baselines, 3-way accuracy on the same rows: always_up 39.2%  momentum 37.1%  linear_regression 38.5%
+Buy & hold, equal weight: return +31.4%  Sharpe 1.07
+
+  model      accuracy    vs up  beats up  log-loss  Brier   return  Sharpe  rank spread (top - bottom 20%)
+  prior                                     1.0810
+  logistic      39.2%   -0.0pp     47.0%    1.0811  0.655   +22.4%    0.86  -0.02% a period, positive 48%
+  lightgbm      39.3%   +0.1pp     53.0%    1.0803  0.655   +21.8%    0.88  -0.02% a period, positive 51%
+  mlp           39.3%   +0.1pp     51.0%    1.0812  0.656   +22.1%    0.87  -0.08% a period, positive 48%
+
+Reliability, predicted-class probability bin: hit rate vs mean probability:
+  logistic   0.00-0.40 37.9% vs 38.2% (n=28070); 0.40-0.50 40.8% vs 42.0% (n=21010); 0.50-0.60 45.3% vs 52.2% (n=214); 0.60-1.00 66.7% vs 66.5% (n=6)
+  lightgbm   0.00-0.40 38.1% vs 38.1% (n=26006); 0.40-0.50 40.5% vs 42.0% (n=22652); 0.50-0.60 40.4% vs 53.4% (n=483); 0.60-1.00 62.3% vs 66.7% (n=159)
+  mlp        0.00-0.40 38.1% vs 37.9% (n=26504); 0.40-0.50 40.6% vs 42.1% (n=22339); 0.50-0.60 47.1% vs 53.4% (n=410); 0.60-1.00 59.6% vs 65.5% (n=47) 
+
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-logistic-1d-absolute-20261011T020938793340Z.joblib
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-lightgbm-1d-absolute-20261011T020940945050Z.joblib
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-mlp-1d-absolute-20261011T021005856366Z.joblib
+Model A, 5-day horizon, absolute target: 100 tickers, 49,200 test rows from 2024-10-16 (refit every 21 dates)
+Baselines, 3-way accuracy on the same rows: always_up 41.6%  momentum 38.5%  linear_regression 40.1%
+Buy & hold, equal weight: return +30.3%  Sharpe 1.20
+
+  model      accuracy    vs up  beats up  log-loss  Brier   return  Sharpe  rank spread (top - bottom 20%)
+  prior                                     1.0678
+  logistic      41.7%   +0.0pp     36.0%    1.0683  0.648   +27.6%    1.13  -0.06% a period, positive 47%
+  lightgbm      41.6%   -0.1pp     39.0%    1.0689  0.648   +30.0%    1.25  +0.03% a period, positive 48%
+  mlp           41.7%   +0.0pp     44.0%    1.0687  0.648   +33.2%    1.34  -0.18% a period, positive 39%
+
+Reliability, predicted-class probability bin: hit rate vs mean probability:
+  logistic   0.00-0.40 39.7% vs 38.5% (n=4136); 0.40-0.50 41.7% vs 43.6% (n=44436); 0.50-0.60 53.3% vs 51.9% (n=625); 0.60-1.00 100.0% vs 63.4% (n=3)
+  lightgbm   0.00-0.40 39.7% vs 38.5% (n=6457); 0.40-0.50 41.5% vs 43.5% (n=41073); 0.50-0.60 49.5% vs 52.7% (n=1441); 0.60-1.00 54.6% vs 65.3% (n=229)
+  mlp        0.00-0.40 40.4% vs 38.9% (n=8867); 0.40-0.50 41.7% vs 43.5% (n=39236); 0.50-0.60 49.6% vs 52.9% (n=938); 0.60-1.00 58.5% vs 64.7% (n=159) 
+
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-logistic-5d-absolute-20261011T022024833368Z.joblib
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-lightgbm-5d-absolute-20261011T022026905659Z.joblib
+saved C:\Users\skill\OneDrive\Desktop\finance_sub_agent_prediction-\backend\data\models\price-mlp-5d-absolute-20261011T022047566215Z.joblib
+Gate (ml/spec.md): beat always-up by more than 2.5 points and on more than half the tickers, at both the 1- and 5-day horizons.
+  logistic   FAIL
+  lightgbm   FAIL
+  mlp        FAIL

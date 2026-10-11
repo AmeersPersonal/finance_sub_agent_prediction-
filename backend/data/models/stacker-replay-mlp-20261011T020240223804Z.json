@@ -1,0 +1,35 @@
+{
+  "kind": "model_b_replay",
+  "note": "trained on backdated forecasts: pre-adjusts weights, not live accuracy, passes no gate",
+  "target": "absolute",
+  "columns": [
+    "call.agreement",
+    "call.confidence",
+    "call.net_score",
+    "call.stability",
+    "earnings_within_horizon",
+    "flat_band_pct",
+    "horizon_days",
+    "mode.default",
+    "persona.day_trader:25-39.flat",
+    "persona.day_trader:25-39.net",
+    "persona.index_options:25-39.flat",
+    "persona.index_options:25-39.net",
+    "persona.long_term:25-39.flat",
+    "persona.long_term:25-39.net",
+    "strategy.day_trader",
+    "strategy.index_options",
+    "strategy.long_term"
+  ],
+  "rows": 500,
+  "data_through": "2026-10-08",
+  "walk_forward": {
+    "accuracy": 0.5,
+    "log_loss": 1.069636944531123
+  },
+  "name": "stacker-replay-mlp",
+  "model": "mlp",
+  "file": "stacker-replay-mlp-20261011T020240223804Z.joblib",
+  "trained_at": "2026-10-11T02:02:40.223804+00:00",
+  "git_revision": "16131a12d0ddc0a11c38021a34fe4191641ea145"
+}

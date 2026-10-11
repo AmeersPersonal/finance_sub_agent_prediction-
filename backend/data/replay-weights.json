@@ -1,0 +1,9 @@
+{
+  "strategy_weights": {
+    "day_trader": 1.063,
+    "index_options": 0.987,
+    "long_term": 0.95
+  },
+  "scored": 500,
+  "source": "replay"
+}
