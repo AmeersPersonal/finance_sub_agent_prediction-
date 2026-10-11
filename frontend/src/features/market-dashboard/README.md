@@ -80,6 +80,15 @@ features/market-dashboard/
 | Forecast, personas, story summary | `GET /predictions?ticker=&limit=1` | The latest saved forecast. "Run a forecast" posts `/prediction-jobs` and polls every 3 s (10–60 s, longer on a rate-limited Gemini key) |
 | Refresh data / Fetch data | `POST /stocks/{t}/refresh` | Stores prices, company data and documents for any ticker (~30 s, no model calls), then every panel refetches |
 
+## Tests
+
+`npm test` (Vitest, jsdom) runs in a few seconds with no backend: `src/test/fakeBackend.js`
+answers every `/api` request with data in the API's real shapes. Unit tests sit next to
+`lib/` and `hooks/` (API client errors, latest-price rules, New York session dates, job
+polling with fake timers); `MarketDashboard.test.jsx` renders the whole page for saved data,
+missing data, backend outages, refreshes and forecast jobs. The backend side of the same
+contract is `backend/src/tests/test_frontend_contract.py`: change both together.
+
 There is no live price feed: prices are as of the last refresh. A real feed would
 call `publishTick({ symbol, price, at })` from `lib/tickStore.js`.
 

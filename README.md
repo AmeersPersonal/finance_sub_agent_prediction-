@@ -18,6 +18,7 @@ npm install
 npm run dev       # http://localhost:5173
 npm run build
 npm run lint
+npm test          # Vitest: dashboard, sign-in pages and API client against a fake backend
 ```
 
 | Route | Page |

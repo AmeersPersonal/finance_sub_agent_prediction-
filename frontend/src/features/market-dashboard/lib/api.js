@@ -11,7 +11,7 @@ export class ApiError extends Error {
 }
 
 // FastAPI sends `detail` as a string, or a list of validation errors for a 422.
-function detailText(detail, status) {
+export function detailText(detail, status) {
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail) && detail[0]?.msg) return detail.map((d) => d.msg).join('; ');
   if (status === 502 || status === 503 || status === 504) return 'The backend is unavailable right now. Try again shortly.';

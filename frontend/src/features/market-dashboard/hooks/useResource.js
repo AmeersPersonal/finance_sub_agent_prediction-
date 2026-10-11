@@ -2,7 +2,7 @@
 // where status is 'loading' | 'success' | 'empty' | 'error'. `override` comes from the
 // dev preview-state control; `reload` is bumped after a data refresh to refetch everything.
 import { useState, useEffect, useEffectEvent, useCallback, useRef } from 'react';
-import { getBars, getNews, getLatestPrediction, startForecast, getJob } from '../lib/api.js';
+import { getBars, getNews, getLatestPrediction, startForecast, getJob, detailText } from '../lib/api.js';
 import { sessionDate } from '../lib/assets.js';
 import { publishTick } from '../lib/tickStore.js';
 
@@ -143,7 +143,9 @@ export function useForecastJob(symbol, onDone) {
         setJob({ symbol, status: 'idle', error: null, startedAt: null });
         onDoneRef.current();
       } else {
-        setJob({ symbol, status: 'failed', error: view.error || 'The forecast failed.', startedAt });
+        // A failed job's error is { status_code, detail } (api/state.py), never shown raw.
+        const message = view.error?.detail ? detailText(view.error.detail, view.error.status_code) : 'The forecast failed. Try again later.';
+        setJob({ symbol, status: 'failed', error: message, startedAt });
       }
     } catch (error) {
       if (error.name !== 'AbortError') setJob({ symbol, status: 'failed', error: error.message, startedAt });

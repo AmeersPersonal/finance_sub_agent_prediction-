@@ -16,8 +16,9 @@ export const assets = [
   { symbol: 'DIA', name: 'SPDR Dow Jones ETF', type: 'ETF', sector: 'Broad market' },
 ];
 
-// Same rule as the backend's ticker check (database.service.normalize_ticker).
-export const TICKER_PATTERN = /^[A-Z0-9^][A-Z0-9.^=-]{0,19}$/;
+// Same rule as the API's ticker check (database.service.normalize_ticker), so a ticker
+// accepted here is never a 422 there; backend/src/tests/test_frontend_contract.py compares them.
+export const TICKER_PATTERN = /^[A-Z0-9^][A-Z0-9.^=-]{0,14}$/;
 
 export function assetFor(symbol) {
   return assets.find((a) => a.symbol === symbol)

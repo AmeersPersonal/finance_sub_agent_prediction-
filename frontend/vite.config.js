@@ -16,4 +16,10 @@ export default defineConfig({
       },
     },
   },
+  // Vitest (npm test): components render in jsdom; the backend is a fake (src/test/fakeBackend.js).
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.js'],
+    restoreMocks: true,
+  },
 })
