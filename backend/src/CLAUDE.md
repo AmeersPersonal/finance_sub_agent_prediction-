@@ -1,7 +1,8 @@
 # CLAUDE.md: Backend
 
 Guidance for AI coding agents working in `backend/` (the Python backend of the
-finance sub-agent prediction project). It does not cover any frontend.
+finance sub-agent prediction project). Repo-wide steps (after pulling, running both
+apps, tests, the frontend/backend API contract) are in the root `AGENTS.md`.
 
 ## What it does
 
@@ -57,7 +58,8 @@ backend/
     ├── requirements.lock     # every dependency, pinned with hashes (uv pip compile --universal)
     ├── api/
     │   ├── main.py           # the one FastAPI app: forecasts (sign-in, rate limit, jobs), reads, /score, /me
-    │   └── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
+    │   ├── state.py          # in-process rate limiter, prediction jobs, score cache (run one worker)
+    │   └── accounts.py       # POST /signup, /login: email/password accounts, same session as Google
     ├── ai/
     │   ├── main.py           # predict(): fetch -> live quote? -> sentiment -> personas -> aggregate
     │   ├── tool.py           # parallel fetching -> MarketSnapshot; clean_daily repairs Yahoo's last bar
@@ -137,7 +139,9 @@ python main.py SPY --backtest [--features a,b,c]      # regression walk-forward 
 python -m ml price [--target relative]                # model A walk-forward + gate (ml/spec.md)
 python -m ml stacker                                  # model B; needs ~300 scored predictions
 python -m ml coverage                                 # accuracy at coverage, strength calibration
+python -m database.migrate                            # after pulling: applies only new migrations
 uvicorn api.main:app --reload                         # HTTP API (database-backed), docs at /docs
+python -m snowflake_rag sync                          # index new passages for RAG_BACKEND=snowflake
 python -m database.backup                             # pg_dump + retention schedule (database/docs/retention-and-access.md)
 pytest                                                # offline
 pytest --cov --cov-report=term-missing                # with coverage
@@ -270,8 +274,10 @@ Policy requires approval first and forbids sharing its data. Every document has 
 retrieval mixes the roles per strategy (`service.mix_roles`). Semantic vector
 retrieval is optional: `RAG_BACKEND=snowflake` fuses Snowflake Cortex rankings
 with the keyword search (`snowflake_rag/spec.md`), and PostgreSQL reloads every
-ranked chunk under the same point-in-time rules. Frontend wiring is not
-implemented. Retention, backups, source
+ranked chunk under the same point-in-time rules. The dashboard
+(`frontend/src/features/market-dashboard`) reads these routes, and
+`tests/test_frontend_contract.py` pins the fields it uses: change a field the
+frontend reads and you change the frontend too. Retention, backups, source
 use and database roles: `database/docs/retention-and-access.md`. Record prompt changes in
 `agents.PROMPT_CHANGELOG` (and `ai/spec.md`).
 

@@ -24,8 +24,8 @@ npm test          # Vitest: dashboard, sign-in pages and API client against a fa
 | Route | Page |
 |---|---|
 | `/` | Landing page (Money Moves) |
-| `/Signin` | Sign-in screen. The form posts to a placeholder `/api/login`, then navigates to `/dashboard`. |
-| `/Signup` | Sign-up screen. The form posts to a placeholder `/api/signup`, then navigates to `/signin`. |
+| `/Signin` | Sign-in with email and password (`POST /login`); goes to the dashboard once the backend accepts it. |
+| `/Signup` | Create an account (`POST /signup`; the backend stores only a password hash), then sign in. |
 | `/Dashboard` | Market Move Dashboard: story, chart, why it moved, the personas' forecast and votes, news, and watchlist, all from the backend API (start it first; `/api` is proxied to port 8000). Lazy-loaded. |
 | `/scenarios` | Market Move Scenarios: move hypothetical factors and see an educational example. Not a forecast. |
 
@@ -41,12 +41,13 @@ Setup, the CLI, Docker, and environment variables are in [`backend/README.md`](b
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r src/requirements.txt
-copy .env.example .env          # set GEMINI_API_KEY; set API_REQUIRE_SIGN_IN=false for local API use without Google OAuth
+copy .env.example .env          # set GEMINI_API_KEY and DATABASE_URL; API_REQUIRE_SIGN_IN=false to run forecasts without signing in
 ```
 
 From `backend/src/`:
 
 ```bash
+python -m database.migrate      # creates the tables; run again after every pull (applies only what's new)
 python main.py AAPL             # all 13 personas, 5-day horizon, logged to JSONL
 python main.py AAPL --database  # same forecast, saved in PostgreSQL with retrieved evidence
 python main.py --score          # accuracy vs baselines once horizons have passed
@@ -66,10 +67,12 @@ Creating a forecast through the API requires Google sign-in unless `API_REQUIRE_
 
 | Doc | What it covers |
 |---|---|
+| [`AGENTS.md`](AGENTS.md) | For contributors and AI coding agents: what to run after pulling, how to run and test both apps, rules that span frontend and backend |
+| [`frontend/README.md`](frontend/README.md) | Frontend layout, commands and tests |
 | [`backend/src/spec.md`](backend/src/spec.md) | Backend layout and why it is split this way |
 | [`backend/src/database/docs/README.md`](backend/src/database/docs/README.md) | Database guides (schema, local setup, Tiger Cloud) |
 | [`backend/src/database/SETUP.md`](backend/src/database/SETUP.md) | Local PostgreSQL, migrations, API service |
 | [`backend/src/sources/spec.md`](backend/src/sources/spec.md) | Which documents are collected |
 | [`backend/src/ml/spec.md`](backend/src/ml/spec.md) | Learned price models and the stacker |
 
-CI (`.github/workflows/backend.yml`) runs the backend tests, including PostgreSQL, and builds the API image on pushes that touch `backend/`.
+CI: `.github/workflows/backend.yml` runs the backend tests, including PostgreSQL, and builds the API image on pushes that touch `backend/`; `.github/workflows/frontend.yml` runs the frontend tests, lint and build on pushes that touch `frontend/`.

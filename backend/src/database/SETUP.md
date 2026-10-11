@@ -141,7 +141,8 @@ Run it again after pulling new code: it applies only what's new. Migration 005
 indexes document titles for retrieval; 006 tracks what the optional Snowflake
 index holds; 007 adds shared sign-in tables (used only with
 `OAUTH_SESSION_STORE=database`); 008 archives every price-bar correction so past
-datasets can be rebuilt exactly. Run it before using the new code: title search
+datasets can be rebuilt exactly; 009 adds email/password accounts (`user_accounts`)
+for `POST /signup` and `/login`. Run it before using the new code: title search
 and the Snowflake sync need 005 and 006.
 
 ## 4. Save and evaluate predictions

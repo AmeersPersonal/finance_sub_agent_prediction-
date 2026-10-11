@@ -1,16 +1,37 @@
-# React + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite + React Router + Tailwind 4. Repo-wide setup, the after-pull checklist
+and the frontend/backend contract are in the root [`AGENTS.md`](../AGENTS.md).
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev       # http://localhost:5173 — proxies /api to the backend on port 8000
+npm test          # Vitest against a fake backend; no server needed
+npm run build
+```
 
-## React Compiler
+The dashboard and sign-in pages need the backend API running for real data
+(`uvicorn api.main:app` from `backend/src/`). Set `API_TARGET` to proxy somewhere other
+than `http://127.0.0.1:8000`, or `VITE_API_BASE` to call an API URL directly.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Layout
 
-## Expanding the ESLint configuration
+| Path | What it is |
+|---|---|
+| `src/App.jsx` | Routes: `/`, `/Signin`, `/Signup`, `/Dashboard`, `/scenarios` |
+| `src/pages/` | Landing, sign-in, sign-up, and the lazy-loaded dashboard and scenarios pages |
+| `src/features/market-dashboard/` | The dashboard: panels, data hooks and API client ([README](src/features/market-dashboard/README.md) lists which API route feeds each panel) |
+| `src/lib/auth.js` | Email/password sign-up, sign-in, current user and sign-out (`/signup`, `/login`, `/oauth/me`, `/oauth/logout`) |
+| `src/test/` | Test setup and `fakeBackend.js`, which answers `/api` requests in the real API's shapes |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Tests and lint
+
+Tests sit next to the code (`*.test.js`, `*.test.jsx`). `fakeBackend.js` mirrors the API's
+response shapes; when a backend field changes, update it together with
+`backend/src/tests/test_frontend_contract.py`.
+
+CI lints `src/features src/lib src/test src/pages/auth-pages.test.jsx vite.config.js`.
+`npm run lint` on everything still reports the unrendered `LearningMode` and `Honesty`
+sections in `src/pages/Landing.jsx`; once they're rendered or removed, widen the CI step.
