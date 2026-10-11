@@ -323,7 +323,7 @@ def test_calibration_walk_forward_scores_every_method():
 
 
 def test_cli_price_prints_reports_and_the_gate(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "fetch_dailies", lambda tickers: (
+    monkeypatch.setattr(cli, "fetch_dailies", lambda tickers, years=5: (
         {t: _daily(seed=i) for i, t in enumerate(tickers)}, {}))
     saved = []
     monkeypatch.setattr(cli, "save", lambda model, name, meta: saved.append((name, meta)) or Path(name))
@@ -336,7 +336,7 @@ def test_cli_price_prints_reports_and_the_gate(monkeypatch, capsys):
 
 
 def test_cli_price_relative_drops_the_benchmark_and_needs_both_horizons(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "fetch_dailies", lambda tickers: (
+    monkeypatch.setattr(cli, "fetch_dailies", lambda tickers, years=5: (
         {t: _daily(seed=i) for i, t in enumerate(tickers)}, {}))
     cli.main(["price", "SPY", "AAA", "BBB", "--target", "relative", "--horizon", "5",
               "--models", "logistic"])
@@ -480,3 +480,70 @@ def test_cli_coverage_prints_the_new_levers(monkeypatch, capsys):
     assert "Persona ranking (lever 6): no day had 5 or more tickers" in out
     cli.main(["stacker", "--target", "relative"])
     assert "relative to SPY: blocked, 0 scored predictions" in capsys.readouterr().out
+
+
+# --- replay ----------------------------------------------------------------------
+
+
+def _snapshot(days: int = 60):
+    from ai.tool import MarketSnapshot
+
+    daily = _daily(1, days=days)
+    return MarketSnapshot(
+        ticker="TEST",
+        fetched_at=datetime.now(timezone.utc),
+        daily=daily,
+        last_price=float(daily["Close"].iloc[-1]),
+        market_daily=daily,
+        info={"sector": "Technology", "trailingPE": 31.0, "targetMeanPrice": 999.0},
+        headlines=["TEST soars"],
+        price_targets={"mean": 999.0},
+        earnings_dates=[date(2026, 12, 1)],
+        errors={},
+    )
+
+
+def test_backdate_cuts_prices_and_removes_today_only_data():
+    from ml.replay import REPLAY_WARNING, backdate_snapshot
+
+    snap = _snapshot()
+    as_of = snap.daily.index[-10].date()
+    old = backdate_snapshot(snap, as_of)
+
+    assert old.daily.index[-1].date() == as_of
+    assert old.market_daily.index[-1].date() == as_of
+    assert old.last_price == pytest.approx(float(old.daily["Close"].iloc[-1]))
+    assert old.previous_close == pytest.approx(float(old.daily["Close"].iloc[-2]))
+    assert old.headlines == [] and old.news == [] and old.price_targets == {}
+    assert old.earnings_dates == [] and old.options is None and old.intraday is None
+    assert old.info == {"sector": "Technology"}  # identity kept, valuation dropped
+    assert old.errors[REPLAY_WARNING].startswith("backdated to")
+    assert snap.headlines == ["TEST soars"]  # the original is untouched
+
+
+def test_backdate_rejects_a_date_without_a_bar():
+    from ml.replay import backdate_snapshot
+
+    snap = _snapshot()
+    with pytest.raises(ValueError, match="no daily bar"):
+        backdate_snapshot(snap, date(2000, 1, 1))
+
+
+def test_replay_dates_end_at_the_last_settled_session_minus_horizon():
+    import pandas as pd
+
+    from ml.replay import replay_dates
+
+    # Saturday 2026-10-10: the last settled session is Friday 2026-10-09.
+    now = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+    one = replay_dates(1, 5, now)
+    five = replay_dates(5, 5, now)
+    assert one == [date(2026, 10, d) for d in (1, 2, 5, 6, 7, 8)][-5:]
+    assert one[-1] == date(2026, 10, 8) and five[-1] == date(2026, 10, 2)
+    assert len(five) == 5 and pd.Timestamp(five[0]).dayofweek < 5
+
+
+def test_replay_cli_defaults_to_one_persona_per_strategy():
+    args = cli.parse_args(["replay", "AAPL", "--sessions", "3"])
+    assert args.age == ["25-39"] and args.horizons == (1, 5) and args.tickers == ["AAPL"]
+    assert cli.parse_args(["price", "--universe", "large", "--years", "10"]).tickers[0] == "SPY"

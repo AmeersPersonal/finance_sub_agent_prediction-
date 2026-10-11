@@ -17,6 +17,7 @@ No LLM calls.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from collections import defaultdict
 from collections.abc import Sequence
@@ -25,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from ai.evaluation import DEFAULT_LOG, score_log
+from ai.personas import AGE_BANDS
 from ai.tool import clean_daily, fetch_daily
 from finance.linear_regression import FEATURE_FUNCTIONS, FEATURES
 from ml.calibration import (
@@ -36,7 +38,17 @@ from ml.calibration import (
 )
 from ml.dataset import pooled_price_rows, stacker_rows
 from ml.model import MODELS, LogisticModel, get_device, make_model
+from ml.replay import (
+    DEFAULT_REPLAY_FILE,
+    REPLAY_AGE_BAND,
+    RunSummary,
+    render_result,
+    run_collect,
+    run_replay,
+    train,
+)
 from ml.store import save
+from ml.universe import DEFAULT_TICKERS, UNIVERSES
 from ml.walkforward import (
     GATE_MARGIN,
     MIN_SCORED_FOR_STACKER,
@@ -49,13 +61,9 @@ from ml.walkforward import (
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
-# The 25-ticker set of the regression feature experiment (finance/spec.md).
-DEFAULT_TICKERS = (
-    "SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM",
-    "JNJ", "PG", "KO", "WMT", "UNH", "HD", "CAT", "BA", "DIS", "NFLX", "AMD", "INTC", "PFE",
-)
 BENCHMARK = "SPY"
 GATE_HORIZONS = (1, 5)
+REPLAY_HORIZONS = (1, 5)
 
 
 def _names(spec: str, known: Sequence[str], what: str) -> tuple[str, ...]:
@@ -80,6 +88,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        help=models_help)
     price.add_argument("--features", type=lambda s: _names(s, list(FEATURE_FUNCTIONS), "features"),
                        default=FEATURES, help=f"comma-separated; known: {', '.join(FEATURE_FUNCTIONS)}")
+    price.add_argument("--universe", choices=tuple(UNIVERSES), default="default",
+                       help="ticker list when none are given: default (25) or large (~100)")
+    price.add_argument("--years", type=int, default=5,
+                       help="years of daily history per ticker (default 5; 10+ adds market regimes)")
     price.add_argument("--test-fraction", type=float, default=0.2)
     price.add_argument("--refit-every", type=int, default=21, help="test dates per refit")
     price.add_argument("--cost-bps", type=float, default=5.0)
@@ -106,13 +118,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     coverage.add_argument("--database", action="store_true",
                           help="score forecasts saved in PostgreSQL instead of the log")
 
+    replay = commands.add_parser(
+        "replay", help="forecast the last N sessions, score them, train model B and adjust weights"
+    )
+    _forecast_args(replay)
+    replay.add_argument("--sessions", type=int, default=10, help="as-of sessions per horizon (default 10)")
+    replay.add_argument("--file", type=Path, default=DEFAULT_REPLAY_FILE,
+                        help="replay forecasts; resumable, never the live log")
+    replay.add_argument("--score-only", action="store_true",
+                        help="skip the LLM: score and train on forecasts already in --file")
+    replay.add_argument("--models", type=lambda s: _names(s, list(MODELS), "models"),
+                        default=("logistic", "mlp"), help=models_help + " (default logistic,mlp)")
+    replay.add_argument("--target", choices=("absolute", "relative"), default="absolute")
+    replay.add_argument("--test-fraction", type=float, default=0.3)
+    replay.add_argument("--refit-every", type=int, default=3, help="prediction dates per refit")
+    replay.add_argument("--min-scored", type=int, default=60)
+    replay.add_argument("--no-save", action="store_true", help="don't store the fitted models")
+
+    collect = commands.add_parser("collect", help="today's live forecasts, appended to the prediction log")
+    _forecast_args(collect)
+    collect.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
+
     args = parser.parse_args(argv)
     if args.command == "price":
         args.horizons = tuple(dict.fromkeys(args.horizon or GATE_HORIZONS))
         if min(args.horizons) < 1:
             parser.error("--horizon must be at least 1")
-        args.tickers = [t.upper() for t in args.tickers] or list(DEFAULT_TICKERS)
+        if args.years < 1:
+            parser.error("--years must be at least 1")
+        args.tickers = [t.upper() for t in args.tickers] or list(UNIVERSES[args.universe])
+    elif args.command in ("replay", "collect"):
+        args.horizons = tuple(dict.fromkeys(args.horizon or REPLAY_HORIZONS))
+        if min(args.horizons) < 1:
+            parser.error("--horizon must be at least 1")
+        args.tickers = [t.upper() for t in args.tickers] or list(UNIVERSES[args.universe])
+        args.age = args.age or [REPLAY_AGE_BAND]
     return args
+
+
+def _forecast_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("tickers", nargs="*", help="default: the --universe list")
+    parser.add_argument("--universe", choices=tuple(UNIVERSES), default="default")
+    parser.add_argument("--horizon", type=int, action="append", help="trading days; repeatable (default 1 and 5)")
+    parser.add_argument("--age", action="append", choices=[b.label for b in AGE_BANDS],
+                        help=f"age band; repeatable (default {REPLAY_AGE_BAND}: one persona per strategy)")
+    parser.add_argument("--concurrency", type=int, default=4, help="forecasts in flight at once")
 
 
 def _pct(value: float | None) -> str:
@@ -126,11 +176,13 @@ def _num(value: float | None, digits: int = 2) -> str:
 # --- price (model A) -------------------------------------------------------------
 
 
-def fetch_dailies(tickers: Sequence[str]) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+def fetch_dailies(
+    tickers: Sequence[str], years: int = 5
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     dailies, errors = {}, {}
     for ticker in dict.fromkeys(tickers):
         try:
-            daily = clean_daily(fetch_daily(ticker))
+            daily = clean_daily(fetch_daily(ticker, years))
         except Exception as exc:  # yfinance raises many types; one ticker mustn't stop the run
             errors[ticker] = f"{type(exc).__name__}: {exc}"
             continue
@@ -200,7 +252,7 @@ def _price_meta(data, report: PriceReport, score: ModelScore) -> dict:
 
 def run_price(args: argparse.Namespace) -> int:
     relative = args.target == "relative"
-    dailies, errors = fetch_dailies([*args.tickers, *([BENCHMARK] if relative else [])])
+    dailies, errors = fetch_dailies([*args.tickers, *([BENCHMARK] if relative else [])], args.years)
     for ticker, why in errors.items():
         print(f"{ticker}: skipped: {why}", file=sys.stderr)
     benchmark = dailies.get(BENCHMARK) if relative else None
@@ -383,9 +435,66 @@ def run_coverage(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- replay and collect ----------------------------------------------------------
+
+
+def _print_summary(summary: RunSummary, what: str) -> None:
+    print(f"{what}: {summary.saved} forecasts saved, {summary.skipped_done} already done, "
+          f"{len(summary.failed)} failed of {summary.requested} requested")
+    for name, why in list(summary.failed.items())[:10]:
+        print(f"  {name}: {why}", file=sys.stderr)
+    if len(summary.failed) > 10:
+        print(f"  ... and {len(summary.failed) - 10} more", file=sys.stderr)
+
+
+def run_replay_command(args: argparse.Namespace) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv(ENV_FILE)
+    if not args.score_only:
+        try:
+            summary = asyncio.run(run_replay(
+                args.tickers, args.horizons, args.sessions, args.age, args.file, args.concurrency
+            ))
+        except RuntimeError as exc:  # missing API key
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        _print_summary(summary, "Replay")
+    if not args.file.exists():
+        print(f"error: no replay file at {args.file}", file=sys.stderr)
+        return 1
+    report = score_log(args.file)
+    if not report.outcomes:
+        print(f"Nothing has resolved yet ({report.pending} pending).")
+        return 0
+    result = train(report, args.models, args.target, args.test_fraction, args.refit_every,
+                   save_models=not args.no_save, min_scored=args.min_scored)
+    print()
+    print(render_result(result))
+    return 0
+
+
+def run_collect_command(args: argparse.Namespace) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv(ENV_FILE)
+    try:
+        summary = asyncio.run(run_collect(
+            args.tickers, args.horizons, args.age, args.log_file, args.concurrency
+        ))
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _print_summary(summary, "Collect")
+    return 1 if summary.failed and not summary.saved else 0
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    run ={"price": run_price, "stacker": run_stacker, "coverage": run_coverage}[args.command]
+    run = {
+        "price": run_price, "stacker": run_stacker, "coverage": run_coverage,
+        "replay": run_replay_command, "collect": run_collect_command,
+    }[args.command]
     if run(args):
         sys.exit(1)
 

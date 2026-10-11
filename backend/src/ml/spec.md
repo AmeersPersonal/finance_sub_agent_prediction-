@@ -81,6 +81,38 @@ these are the traps we found while checking the same idea:
   for headline sentiment. 25 tickers x 2 horizons x 13 personas is ~700 calls
   per replayed day.
 
+## Replay, collect and the larger universe (2026-10-10)
+
+```
+python -m ml replay [TICKERS] --sessions 10      # last N settled sessions, 1d and 5d, 3 personas (age 25-39)
+python -m ml replay --score-only                 # re-score and retrain on data/replay.jsonl, no LLM
+python -m ml collect [TICKERS]                   # today's live forecasts -> data/predictions.jsonl
+python -m ml price --universe large --years 10   # model A on ~100 tickers and 10 years
+```
+
+- `replay.backdate_snapshot` cuts prices back and drops every today-only field (the traps above).
+  Forecasts are written to `data/replay.jsonl` (resumable) with a `replay:` line in `data_warnings`;
+  never to the live log or the database. `train` fits model B on them, stores it as
+  `stacker-replay-*` with `kind: model_b_replay`, and writes `data/replay-weights.json`
+  (strategy weights, usable as `main.py --weights long_term=..,...`).
+- A replay-trained model B **passes no gate**: the spec's rule stands that only live-logged
+  predictions may judge it. `collect` is how the clean data accumulates; run it daily.
+
+First results (replay of 2026-09-18 to 2026-10-08, 25 tickers, 500 forecasts, 3 personas):
+
+| horizon | n | personas | always-up | momentum | regression |
+|---|---|---|---|---|---|
+| 1d | 250 | 35.2% | 37.6% | 38.8% | 38.4% |
+| 5d | 250 | 24.0% | 36.4% | 28.8% | 38.0% |
+
+Personas were below always-up at both horizons. On 150 held-out forecasts the replay MLP scored
+50.0%, equal to always-up on those rows (it was mostly calling "up"), with the best log-loss (1.07
+vs prior 1.17). Ten independent days: an anecdote, not an accuracy figure.
+
+Model A, 100 tickers, 10 years, test window 2024-10 to 2026-10: **all three models still fail the
+gate.** 1d: 39.2-39.3% vs always-up 39.2%; 5d: 41.6-41.7% vs 41.6%. Log-loss within 0.001 of the
+prior. More tickers and a longer history did not change the verdict.
+
 ## Purpose
 
 Improve accuracy by learning from outcomes instead of hand-set rules.
