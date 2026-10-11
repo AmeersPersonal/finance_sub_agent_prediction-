@@ -14,7 +14,8 @@ export function marketStatus(asset, quote, override) {
   const md = `${part('month')}-${part('day')}`;
   const minutes = Number(part('hour')) * 60 + Number(part('minute'));
 
-  if (day === 'Sat' || day === 'Sun' || ['01-01', '07-04', '12-25'].includes(md)) return 'holiday';
+  if (day === 'Sat' || day === 'Sun') return 'weekend';
+  if (['01-01', '07-04', '12-25'].includes(md)) return 'holiday';
   if (['11-27', '12-24'].includes(md) && minutes >= 570 && minutes < 780) return 'half-day';
   if (minutes < 570) return minutes >= 240 ? 'pre-market' : 'closed';
   if (minutes < 960) return 'open';

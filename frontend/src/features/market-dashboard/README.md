@@ -2,7 +2,9 @@
 
 An educational market dashboard that explains *why* prices moved. It is
 rendered at `/Dashboard` by [`src/pages/Dashboard.jsx`](../../pages/Dashboard.jsx).
-All data is illustrative mock data, not exchange prices, and not financial advice.
+Everything shown comes from the backend API (`backend/src/api/spec.md`): prices saved from
+Yahoo Finance, linked news and filings, and the AI trader personas' saved forecasts.
+It is not real-time and not financial advice.
 
 Plain JavaScript and React, styled with Tailwind 4 utilities plus a scoped
 stylesheet. The chart uses TradingView Lightweight Charts (`lightweight-charts`
@@ -17,6 +19,12 @@ npm install
 npm run dev       # then open http://localhost:5173/Dashboard
 npm run build
 ```
+
+The dashboard needs the API on port 8000 (from `backend/src/`:
+`uvicorn api.main:app`, with `API_REQUIRE_SIGN_IN=false` in `backend/.env` to run
+forecasts without Google sign-in). The Vite dev server proxies `/api` to it, so there
+is no CORS setup; set `API_TARGET` to proxy elsewhere, or `VITE_API_BASE` to call an
+API URL directly. Add `?dev` to the URL to show the preview-state control.
 
 ## How it is wired into the app
 
@@ -52,31 +60,31 @@ features/market-dashboard/
 ├── MarketDashboard.jsx        # app state + page layout (was App.jsx)
 ├── styles/market-dashboard.css
 ├── constants/  strings.js (all user-facing copy), options.js
-├── data/       mockData.js (data shapes documented in comments)
 ├── context/    UIContext.js (open toggletip, learning mode, theme)
-├── hooks/      useResource.js (mock fetching), useRoving.js (tab keyboard nav)
-├── lib/        format, marketStatus, preferences (localStorage),
-│               tickStore + MockWebSocket (live ticks), calculateMoves
+├── hooks/      useResource.js (API data hooks + background forecast job), useRoving.js (tab keyboard nav)
+├── lib/        api (backend client), assets (search list, ticker rule), moves (biggest moves + headlines),
+│               format, marketStatus, preferences (localStorage), tickStore (shared latest prices)
 └── components/
     ├── ui/       AvatarMenu, PanelBoundary, PriceCell, Search, StatePanel, Term, VirtualList
     ├── layout/   Header, Hero, MarketPulse, DevStateControls, AccessibilityNotes, SkipLinks, Footer
-    └── panels/   Story, Chart (+ ChartGraphic), Why, Forecast, Calendar, News, Watchlist
+    └── panels/   Story, Chart (+ ChartGraphic), Why, Forecast, Personas, News, Watchlist
 ```
 
-## Connecting real data
+## Where each panel's data comes from
 
-1. Replace the `make` functions in `hooks/useResource.js` with real `fetch`
-   calls, keeping the `{ data, status, refetch, isStale }` shape. The backend
-   already serves `/stocks/{ticker}/history`, `/stocks/{ticker}/news`, and
-   `/predictions`.
-2. Replace `MockWebSocket` with a real WebSocket client that calls
-   `publishTick({ symbol, price, at })`.
+| Panel | API | Notes |
+|---|---|---|
+| Price, story, watchlist, market pulse | `GET /stocks/{t}/history` (`1d` and `5m`) | Latest saved 5-minute bar, else the daily close; change vs the previous daily close |
+| Chart, why it moved | `GET /stocks/{t}/history` | 1D/1W use 5-minute bars, longer timeframes daily bars. The three biggest moves are matched to headlines saved that New York session |
+| News | `GET /stocks/{t}/news` | Filtered by the role the backend assigned (company info, opinion, product & events); links open the source |
+| Forecast, personas, story summary | `GET /predictions?ticker=&limit=1` | The latest saved forecast. "Run a forecast" posts `/prediction-jobs` and polls every 3 s (10–60 s, longer on a rate-limited Gemini key) |
+| Refresh data / Fetch data | `POST /stocks/{t}/refresh` | Stores prices, company data and documents for any ticker (~30 s, no model calls), then every panel refetches |
+
+There is no live price feed: prices are as of the last refresh. A real feed would
+call `publishTick({ symbol, price, at })` from `lib/tickStore.js`.
 
 ## Before launch
 
 - The forecast disclaimer in `ForecastPanel.jsx` is draft copy and needs legal review.
-- Hide `DevStateControls` behind an environment flag.
-- The watchlist links to `/paper-trading`, which has no route yet; add one in `App.jsx`.
-- `App.jsx` renders a "Testing" line under every page, including this one.
 - Run the manual screen-reader audit listed in the on-page accessibility notes
   (NVDA, JAWS, VoiceOver).

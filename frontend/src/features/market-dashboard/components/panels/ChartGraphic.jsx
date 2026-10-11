@@ -1,5 +1,6 @@
 // Draws the price line. Uses TradingView Lightweight Charts when `api` is loaded,
-// otherwise falls back to a simple inline SVG.
+// otherwise falls back to a simple inline SVG. Marks the biggest moves and, when a
+// forecast exists, its flat band around the forecast's last price.
 import { useEffect, useRef } from 'react';
 import { useUI } from '../../context/UIContext.js';
 
@@ -8,7 +9,7 @@ const cssVar = (element, name) => getComputedStyle(element).getPropertyValue(nam
 // Unix seconds keep intraday points distinct; date strings would collide within a day.
 const toTime = (iso) => Math.floor(new Date(iso).getTime() / 1000);
 
-export default function ChartGraphic({ points, forecast, event, api }) {
+export default function ChartGraphic({ points, prediction, moves, event, api }) {
   const host = useRef(null);
   const { theme } = useUI();
 
@@ -17,28 +18,35 @@ export default function ChartGraphic({ points, forecast, event, api }) {
     try {
       host.current.innerHTML = '';
       const color = (name) => cssVar(host.current, name);
+      const intraday = new Date(points.at(-1).t) - new Date(points[0].t) < 8 * 86400000;
       const chart = api.createChart(host.current, {
         width: host.current.clientWidth,
         height: 260,
         layout: { background: { color: color('--panel') }, textColor: color('--ink2') },
         grid: { vertLines: { visible: false }, horzLines: { color: color('--rule') } },
         rightPriceScale: { borderVisible: false },
-        timeScale: { borderVisible: false },
+        timeScale: { borderVisible: false, timeVisible: intraday },
       });
 
       const series = chart.addLineSeries({ color: color('--accent'), lineWidth: 2 });
       series.setData(points.map((p) => ({ time: toTime(p.t), value: p.value })));
 
-      if (forecast?.status === 'ok') {
-        const line = chart.addLineSeries({ color: color('--ink2'), lineWidth: 2, lineStyle: 2 });
-        const last = points[points.length - 1];
-        line.setData([
-          { time: toTime(last.t), value: last.value },
-          ...forecast.points.map((p, i) => ({
-            time: toTime(new Date(new Date(last.t).getTime() + (i + 1) * 7 * 86400000)),
-            value: p.mid,
-          })),
-        ]);
+      // Markers for the biggest moves; the selected one is labelled.
+      series.setMarkers((moves || [])
+        .map((m) => ({
+          time: toTime(m.t),
+          position: m.change >= 0 ? 'aboveBar' : 'belowBar',
+          shape: 'circle',
+          color: m.id === event ? color('--accent') : color('--ink2'),
+          text: m.id === event ? `${m.change >= 0 ? '+' : ''}${m.change.toFixed(1)}%` : '',
+        }))
+        .sort((a, b) => a.time - b.time));
+
+      if (prediction?.last_price && prediction.flat_band_pct) {
+        const band = prediction.last_price * (prediction.flat_band_pct / 100);
+        for (const [price, title] of [[prediction.last_price + band, 'flat band'], [prediction.last_price - band, '']]) {
+          series.createPriceLine({ price, color: color('--ink2'), lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title });
+        }
       }
 
       chart.timeScale().fitContent();
@@ -49,7 +57,7 @@ export default function ChartGraphic({ points, forecast, event, api }) {
       console.error('Chart render failed:', err);
       return undefined;
     }
-  }, [points, forecast, api, event, theme]);
+  }, [points, prediction, moves, api, event, theme]);
 
   if (api) return <div ref={host} className="plot" aria-hidden="true" />;
 
@@ -65,12 +73,6 @@ export default function ChartGraphic({ points, forecast, event, api }) {
     <div className="plot" aria-hidden="true">
       <svg viewBox="0 0 700 260" preserveAspectRatio="none">
         <line x1="0" y1="210" x2="700" y2="210" stroke="currentColor" opacity=".2" />
-        {forecast?.status === 'ok' && (
-          <>
-            <path d={`M 680 ${cy} L 700 ${cy - 25} L 700 ${cy + 28} Z`} fill="var(--accent)" opacity=".13" />
-            <line x1="680" y1={cy} x2="700" y2={cy - 2} stroke="var(--accent)" strokeDasharray="5 4" />
-          </>
-        )}
         <polyline fill="none" stroke="var(--accent)" strokeWidth="2.5" points={xy} />
         <circle cx="680" cy={cy} r="5" fill="var(--accent)" />
       </svg>
