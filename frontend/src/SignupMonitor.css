@@ -1,0 +1,213 @@
+@import url('https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap');
+
+/* =====================================================================
+   FACE COLORS — change any of these to recolor the face.
+   Use any CSS color: a name (gray), hex (#4a4a4a) or rgb(74 74 74).
+   ===================================================================== */
+.signup-scene {
+  --eye-color: #2e2f2b;      /* the dots in FIRST NAME and LAST NAME */
+  --sparkle-color: #ffffff;  /* the little shine in each dot */
+  --lid-color: #aabbc4;      /* the panel that closes when the eyes blink */
+  --nose-color: #4a4a4a;     /* the nose in EMAIL (dark gray) */
+  --smile-color: #2e2f2b;    /* the smile across PASSWORD and CONFIRM PASSWORD */
+  --smile-thickness: 0.35cqw;
+}
+
+/* ---- Page: green background, header on top, drawing fills the rest ---- */
+.signup-page {
+  height: 100vh;
+  box-sizing: border-box;
+  background: #3f5e47;
+  color: #ede3bd;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.signup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+}
+.signup-header p { margin: 0; }
+.signup-header a { color: #ede3bd; }
+.signup-header .logo { font-weight: 800; text-decoration: none; }
+
+/* ---- The drawing. Everything on top is placed in % so it scales with it. ---- */
+.signup-scene {
+  container-type: inline-size; /* lets text sizes use cqw = 1% of the drawing's width */
+  position: relative;
+  /* As big as the window allows while keeping the drawing whole (same as sign-in) */
+  width: min(100%, calc((100vh - 60px) * 16 / 9));
+  margin: auto;
+}
+.signup-scene .scene-art { display: block; width: 100%; height: auto; }
+
+/* Hand-lettered text */
+.signup-scene .spot {
+  position: absolute;
+  font-family: 'Gochi Hand', cursive;
+  color: #3b3b3b;
+}
+
+/* BACK sits on the blue box drawn in the picture */
+.signup-scene .back {
+  left: 14.45%; top: 9%; width: 9.35%; height: 5.4%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 3cqw;
+  text-decoration: none;
+}
+.signup-scene .back:hover { background: rgb(255 255 255 / 0.25); }
+
+/* ---- Fields: each is a yellow box with its label written above it ---- */
+.signup-scene .field {
+  position: absolute;
+  height: 5.4%;
+}
+/* Where each box goes on the screen (left, top, width) */
+.signup-scene .field-first    { left: 19.98%; top: 22%;   width: 23.3%; }
+.signup-scene .field-last     { left: 54.06%; top: 22%;   width: 23.3%; }
+.signup-scene .field-email    { left: 19.98%; top: 36%;   width: 57.4%; }
+.signup-scene .field-password { left: 19.98%; top: 50%;   width: 23.3%; }
+.signup-scene .field-confirm  { left: 54.06%; top: 50%;   width: 23.3%; }
+
+/* Label: centered just above its box */
+.signup-scene .field-label {
+  bottom: calc(100% + 0.6cqw);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 2.8cqw;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* The yellow box itself */
+.signup-scene .field input {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 1cqw;
+  border: 0;
+  outline: none;
+  background: #f4e48c;
+  color: #2e2f2b;
+  font-family: 'Gochi Hand', cursive;
+  font-size: 2cqw;
+  box-shadow: 0 0 20px 3px rgb(255 236 140 / 0.5); /* soft glow */
+}
+.signup-scene .field input:focus-visible { outline: 3px solid #fff6c2; outline-offset: 2px; }
+/* Keep autofilled boxes yellow instead of the browser's white/blue */
+.signup-scene .field input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 100px #f4e48c inset;
+  -webkit-text-fill-color: #2e2f2b;
+}
+
+/* =====================================================================
+   THE FACE: eyes on the name boxes, nose on email, smile on the passwords
+   ===================================================================== */
+
+/* Each face part fills its box and clips anything that sticks out */
+.signup-scene .face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;     /* clicks go straight through to the box */
+  transition: opacity 0.15s;
+}
+
+/* Hide the face part while you're typing in its box, or once it has text.
+   (Remove the second line if you want it back even when the box has text.) */
+.signup-scene .field input:focus ~ .face,
+.signup-scene .field input:not(:placeholder-shown) ~ .face {
+  opacity: 0;
+}
+
+/* ---- Eyes ---- */
+.signup-scene .dot {
+  position: absolute;
+  top: 12%;
+  left: 46.5%;
+  width: 7%;
+  height: 76%;
+  background: var(--eye-color);
+  border-radius: 50%;
+  /* Follow the mouse: --look-x / --look-y are set by the page script */
+  transform: translate(calc(var(--look-x, 0) * 550%), calc(var(--look-y, 0) * 10%));
+  transition: transform 0.15s;
+}
+.signup-scene .dot::after {               /* the sparkle */
+  content: "";
+  position: absolute;
+  top: 14%;
+  left: 22%;
+  width: 34%;
+  height: 22%;
+  background: var(--sparkle-color);
+  border-radius: 50%;
+}
+.signup-scene .lid {                      /* closes over the eye to blink */
+  position: absolute;
+  inset: 0;
+  background: var(--lid-color);
+  border-bottom: 2px solid #3a3a3a;
+  transform: scaleY(0);
+  transform-origin: top;
+  animation: signup-blink 5s infinite;
+}
+@keyframes signup-blink {
+  0%, 94%, 100% { transform: scaleY(0); }   /* open most of the time */
+  96%, 98%      { transform: scaleY(1); }   /* quick blink */
+}
+
+/* ---- Nose: a soft rounded shape in the middle of the email box ---- */
+.signup-scene .nose {
+  position: absolute;
+  left: 50%;
+  top: 14%;
+  width: 3%;
+  height: 72%;
+  transform: translateX(-50%);
+  background: var(--nose-color);
+  border-radius: 40% 40% 50% 50% / 30% 30% 70% 70%;
+}
+
+/* ---- Smile: one big curve split across the two password boxes ---- */
+.signup-scene .smile {
+  position: absolute;
+  top: -150%;
+  width: 180%;
+  height: 220%;             /* the bottom of this oval is the smile line */
+  border: var(--smile-thickness) solid transparent;
+  border-bottom-color: var(--smile-color);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.signup-scene .face-smile-left .smile  { left: 12%; }    /* left half: curves down toward the middle */
+.signup-scene .face-smile-right .smile { right: 12%; }   /* right half: curves back up */
+
+@media (prefers-reduced-motion: reduce) {
+  .signup-scene .lid { animation: none; }
+  .signup-scene .dot { transition: none; }
+}
+
+/* ---- Error message and CONFIRM button ---- */
+.signup-scene .error {
+  left: 20%; top: 56.2%; width: 57.4%;
+  margin: 0;
+  text-align: center;
+  font-size: 1.8cqw;
+  color: #7a2a1d;
+}
+.signup-scene .confirm {
+  left: 38.9%; top: 61%; width: 20.1%; height: 8.3%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 4.4cqw;
+  background: #dedc9e; /* same yellow as the drawn button on sign-in */
+  border: 0;
+  cursor: pointer;
+}
+.signup-scene .confirm:hover { background: #ebe9b3; }
+.signup-scene .confirm:focus-visible { outline: 3px solid #fff6c2; outline-offset: 2px; }
+.signup-scene .confirm:disabled { cursor: wait; opacity: 0.8; }

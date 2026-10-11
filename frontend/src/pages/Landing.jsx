@@ -526,6 +526,10 @@ function SiteHeader({ theme, onToggleTheme }) {
           <a className="btn btn--small" href="/signin">
             Sign in
           </a>
+           <a className="btn btn--small" href="/signup">
+            Sign Up
+          </a>
+          
         </div>
       </div>
     </header>
