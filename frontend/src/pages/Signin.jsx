@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import monitor from '../assets/signin2.png'
+import monitor from '../assets/signin2-v2.png'
 import '../SigninMonitor.css'
 
 export default function SigninMonitor() {
@@ -71,7 +71,7 @@ export default function SigninMonitor() {
   return (
     <div className="signin-page">
       <header className="signin-header">
-        <Link to="/" className="logo">MyAPP</Link>
+        <Link to="/" className="logo">Market Moves</Link>
         <p>New here? <Link to="/signup">Create an account</Link></p>
       </header>
 

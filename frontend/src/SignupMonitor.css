@@ -17,7 +17,7 @@
 .signup-page {
   height: 100vh;
   box-sizing: border-box;
-  background: #3f5e47;
+  background: #404040; /* same as the top of the wall in the drawing */
   color: #ede3bd;
   padding: 12px 16px;
   display: flex;
@@ -25,6 +25,8 @@
   overflow: hidden;
 }
 .signup-header {
+  position: relative;
+  z-index: 1; /* keep the header above the extended wall */
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -211,3 +213,37 @@
 .signup-scene .confirm:hover { background: #ebe9b3; }
 .signup-scene .confirm:focus-visible { outline: 3px solid #fff6c2; outline-offset: 2px; }
 .signup-scene .confirm:disabled { cursor: wait; opacity: 0.8; }
+
+/* =====================================================================
+   EXTEND THE ROOM: continue the drawing's wall and desk out to the
+   edges of the window, so there are no bars beside the picture.
+
+   The two gradients below were sampled row by row from the left and
+   right edges of the drawing, so the wall's shading lines up with the
+   picture all the way down. If you redraw the background, send the new
+   image and these can be re-sampled.
+   ===================================================================== */
+.signup-page {
+  --desk: #5d5d5d;       /* desk color, used below the picture */
+}
+.signup-scene {
+  z-index: 0;            /* the extended room sits behind the picture */
+}
+.signup-scene::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: -100vh;        /* runs past the bottom of the picture as desk */
+  left: -100vw;
+  right: -100vw;
+  z-index: -1;
+  background:
+    /* left side: matches the drawing's left edge */
+    linear-gradient(rgb(64 64 64) 0%, rgb(64 64 64) 28%, rgb(61 61 61) 29%, rgb(60 60 60) 30%, rgb(59 59 59) 31%, rgb(58 58 58) 32%, rgb(57 57 57) 33%, rgb(57 57 57) 39%, rgb(58 58 58) 40%, rgb(58 58 58) 42%, rgb(57 57 57) 43%, rgb(57 57 57) 47%, rgb(58 58 58) 48%, rgb(58 58 58) 49%, rgb(59 59 59) 50%, rgb(58 58 58) 51%, rgb(56 56 56) 52%, rgb(56 56 56) 54%, rgb(55 55 55) 55%, rgb(55 55 55) 58%, rgb(56 56 56) 59%, rgb(54 54 54) 60%, rgb(54 54 54) 78%, rgb(56 56 56) 79%, rgb(64 64 64) 80%, rgb(64 64 64) 80.5%, rgb(64 64 64) 81.11%, rgb(93 93 93) 81.11%)
+      left top / 50% calc(100% - 100vh) no-repeat,
+    /* right side: matches the drawing's right edge */
+    linear-gradient(rgb(64 64 64) 0%, rgb(64 64 64) 28%, rgb(62 62 62) 29%, rgb(60 60 60) 30%, rgb(59 59 59) 31%, rgb(59 59 59) 32%, rgb(58 58 58) 33%, rgb(58 58 58) 35%, rgb(59 59 59) 36%, rgb(59 59 59) 37%, rgb(60 60 60) 38%, rgb(61 61 61) 39%, rgb(62 62 62) 40%, rgb(62 62 62) 43%, rgb(63 63 63) 44%, rgb(63 63 63) 45%, rgb(64 64 64) 46%, rgb(64 64 64) 52%, rgb(62 62 62) 53%, rgb(59 59 59) 54%, rgb(57 57 57) 55%, rgb(56 56 56) 56%, rgb(56 56 56) 57%, rgb(55 55 55) 58%, rgb(55 55 55) 59%, rgb(54 54 54) 60%, rgb(54 54 54) 62%, rgb(55 55 55) 63%, rgb(56 56 56) 64%, rgb(58 58 58) 65%, rgb(58 58 58) 66%, rgb(57 57 57) 67%, rgb(56 56 56) 68%, rgb(57 57 57) 69%, rgb(56 56 56) 70%, rgb(54 54 54) 71%, rgb(54 54 54) 80.5%, rgb(54 54 54) 81.11%, rgb(93 93 93) 81.11%)
+      right top / 50% calc(100% - 100vh) no-repeat,
+    /* everything below the picture is desk */
+    var(--desk);
+}
