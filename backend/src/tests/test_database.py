@@ -28,6 +28,7 @@ CORE_MIGRATIONS = [
     "006_snowflake_sync.sql",
     "007_oauth_sessions.sql",
     "008_price_bar_revisions.sql",
+    "009_user_accounts.sql",
 ]
 
 
@@ -372,6 +373,21 @@ def test_snowflake_sync_tracking_is_per_chunk_ticker_and_model(db):
     assert len(repo.chunks_to_sync("model-b")) == 2  # a new embedding model re-syncs everything
     assert [r["ticker"] for r in repo.chunks_to_sync("model-b", ticker="PEER")] == ["PEER"]
     assert repo.mark_chunks_synced([], "model-a") == 0
+
+
+def test_accounts_are_unique_by_email_and_store_only_hashes(db):
+    from oauth.passwords import hash_password
+    repo = DatabaseRepository(db)
+    hashed = hash_password("correct horse")
+    first = repo.create_account(email=" Maya@Example.com ", password_hash=hashed, first_name=" Maya ", last_name="Lopez")
+    assert isinstance(first, int)
+    assert repo.create_account(email="maya@example.com", password_hash=hashed, first_name="M", last_name="L") is None
+    account = repo.get_account("MAYA@example.com")
+    assert account == {"id": first, "email": "maya@example.com", "password_hash": hashed,
+                       "first_name": "Maya", "last_name": "Lopez"}
+    assert repo.get_account("nobody@example.com") is None
+    with pytest.raises(DatabaseError):  # the CHECK rejects anything but a scrypt hash
+        repo.create_account(email="x@example.com", password_hash="correct horse", first_name="X", last_name="Y")
 
 
 def test_retrieval_fill_tops_up_keyword_matches_with_recent_passages(db):

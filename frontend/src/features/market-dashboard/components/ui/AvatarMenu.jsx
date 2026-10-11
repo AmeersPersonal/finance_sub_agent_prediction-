@@ -1,12 +1,28 @@
-// Account menu button. Focus moves into the menu on open, is trapped while open,
-// and returns to the button on close.
+// Account menu button: who is signed in (GET /oauth/me) and sign in / sign out.
+// Focus moves into the menu on open, is trapped while open, and returns to the button on close.
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { strings } from '../../constants/strings.js';
+import { currentUser, signOut } from '../../../../lib/auth.js';
 
 export default function AvatarMenu() {
   const [open, setOpen] = useState(false);
+  const [user, setUser] = useState(null);
   const button = useRef(null);
   const menu = useRef(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let active = true;
+    currentUser().then((u) => { if (active) setUser(u); });
+    return () => { active = false; };
+  }, []);
+
+  async function leave() {
+    try { await signOut(); } catch { /* the session is gone either way once the cookie expires */ }
+    setUser(null);
+    navigate('/signin');
+  }
 
   useEffect(() => {
     if (open) menu.current?.querySelector('button')?.focus();
@@ -38,12 +54,16 @@ export default function AvatarMenu() {
         aria-label={strings.account}
         onClick={() => (open ? close() : setOpen(true))}
       >
-        M
+        {user?.name?.trim()?.[0]?.toUpperCase() || '?'}
       </button>
       {open && (
         <div ref={menu} role="menu" aria-label={strings.account} className="menu" onKeyDown={onKeyDown}>
-          <div className="px-2 py-2 small muted">{strings.signedIn}</div>
-          <button role="menuitem" className="action w-full text-left" onClick={close}>{strings.settings}</button>
+          <div className="px-2 py-2 small muted">
+            {user ? <><strong className="block">{user.name}</strong>{user.email}</> : strings.notSignedIn}
+          </div>
+          {user
+            ? <button role="menuitem" className="action w-full text-left" onClick={leave}>{strings.signOut}</button>
+            : <button role="menuitem" className="action w-full text-left" onClick={() => navigate('/signin')}>{strings.signIn}</button>}
           <button role="menuitem" className="action w-full text-left mt-1" onClick={close}>{strings.close}</button>
         </div>
       )}

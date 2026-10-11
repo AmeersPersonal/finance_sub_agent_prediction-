@@ -527,6 +527,24 @@ class DatabaseRepository:
                  start_at, start_at, end_at, end_at),
             ).fetchall()
 
+    def create_account(self, *, email: str, password_hash: str, first_name: str,
+                       last_name: str) -> int | None:
+        """A new email/password account's id, or None when the email is taken."""
+        with self._transaction():
+            row = self.connection.execute(
+                """INSERT INTO user_accounts (email, password_hash, first_name, last_name)
+                VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO NOTHING RETURNING id""",
+                (email.strip().lower(), password_hash, first_name.strip(), last_name.strip()),
+            ).fetchone()
+        return row["id"] if row else None
+
+    def get_account(self, email: str) -> dict | None:
+        with self._transaction():
+            return self.connection.execute(
+                """SELECT id, email, password_hash, first_name, last_name
+                FROM user_accounts WHERE email = %s""", (email.strip().lower(),),
+            ).fetchone()
+
     def get_user_preferences(self, account_reference: str) -> dict | None:
         with self._transaction():
             return self.connection.execute(

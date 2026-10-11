@@ -31,6 +31,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | --- | --- |
 | `main.py` | The FastAPI app: routes, request models, sign-in and quota checks |
 | `state.py` | In-process state: the per-caller rate limiter, background prediction jobs, the score cache |
+| `accounts.py` | `POST /signup`, `POST /login`: email/password accounts (`user_accounts`), hashed with `oauth/passwords.py`, signed in with the same session as Google |
 
 ## Routes
 
@@ -53,6 +54,7 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | `GET /predictions/{id}/charts` | Chart-ready series for one forecast: votes, conviction, strategy scores, flat band, baselines |
 | `GET /score/charts` | `/score` as chart-ready series, plus rolling accuracy over time (same price fetch and append as `/score`) |
 | `GET /oauth/login`, `/oauth/callback`, `/oauth/me`, `POST /oauth/logout` | Google sign-in (code + PKCE), session cookie (`oauth/spec.md`) |
+| `POST /signup`, `POST /login` | Email/password accounts (`accounts.py`): create one; sign in and set the same session cookie (`oauth/spec.md`) |
 | `GET`, `PUT`, `DELETE /me/preferences` | The signed-in user's age band, strategy, experience level and up to 4 KB of UI settings; always needs sign-in |
 
 Prediction request (only `ticker` is required):
@@ -123,9 +125,12 @@ and tell your coding agent to read this section:
   `API_CORS_ORIGINS` on the backend to change them. CORS allows credentials, so
   send `credentials: "include"` on requests that need the sign-in cookie. A
   Vite dev proxy (`/api` -> `http://localhost:8000`) also works and avoids CORS.
-- **Sign-in**: send the browser to `GET /oauth/login`; after Google it returns to
-  `OAUTH_POST_LOGIN_REDIRECT` (set it to the frontend's page). `GET /oauth/me`
-  returns the user or 401. Creating forecasts needs sign-in (send
+- **Sign-in**: email/password with `POST /signup` (`firstName`, `lastName`,
+  `email`, `password`) and `POST /login` (`email`, `password`), which sets the
+  session cookie (`frontend/src/lib/auth.js`); or send the browser to
+  `GET /oauth/login` for Google, which returns to `OAUTH_POST_LOGIN_REDIRECT`
+  (set it to the frontend's page). `GET /oauth/me` returns the user or 401;
+  `POST /oauth/logout` ends either kind of session. Creating forecasts needs sign-in (send
   `credentials: "include"`); on a 401, send the user to sign in. Reads don't.
   For local work without OAuth, the backend sets `API_REQUIRE_SIGN_IN=false`.
 - **Slow requests**: a forecast takes 10-60 s (more with modes). Prefer

@@ -43,6 +43,7 @@ from database.repository import DatabaseRepository
 from oauth.provider import OAuthSettings
 from oauth.routes import current_user, get_settings, get_store
 from oauth.routes import router as oauth_router
+from api.accounts import router as accounts_router
 from oauth.sessions import SessionStore
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -203,6 +204,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(oauth_router)
+app.include_router(accounts_router)
 
 
 @app.exception_handler(DatabaseError)
@@ -401,7 +403,9 @@ class PreferencesRequest(BaseModel):
 
 def account_reference(user: dict[str, Any], settings: OAuthSettings) -> str:
     """The provider's stable subject id, namespaced by provider host. Never the email,
-    which can change hands."""
+    which can change hands. Email/password accounts are already namespaced (`password:<id>`)."""
+    if user.get("provider") == "password":
+        return user["sub"]
     return f"{urlsplit(settings.userinfo_url).hostname}:{user['sub']}"
 
 
