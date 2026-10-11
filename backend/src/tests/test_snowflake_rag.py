@@ -144,7 +144,7 @@ def test_search_filters_point_in_time_and_returns_typed_hits():
                         since=CUTOFF - timedelta(days=7), role="public_opinion", k=8)
     assert hits == [(11, 0.82), (12, 0.5)]
     statement, params = conn.statements[0]
-    assert "EMBED_TEXT_1024(%(model)s, %(query)s)" in statement
+    assert "AI_EMBED(%(model)s, %(query)s)" in statement
     assert "c.FIRST_SEEN_AT <= TO_TIMESTAMP_TZ(%(cutoff)s)" in statement
     assert "c.PUBLISHED_AT <= TO_TIMESTAMP_TZ(%(cutoff)s)" in statement
     assert "%(since)s" in statement and "c.EVIDENCE_ROLE = %(role)s" in statement
@@ -187,7 +187,7 @@ def test_upsert_stages_rows_then_merges_with_embeddings():
     assert staged[1][3] == "other"
     merge, params = conn.statements[3]
     assert merge.startswith("MERGE INTO RAG_CHUNKS") and "WHEN NOT MATCHED THEN INSERT" in merge
-    assert "EMBED_TEXT_1024" in merge and params == {"model": "snowflake-arctic-embed-l-v2.0"}
+    assert "AI_EMBED(%(model)s" in merge and params == {"model": "snowflake-arctic-embed-l-v2.0"}
 
 
 def test_upsert_nothing_and_naive_timestamps():

@@ -34,6 +34,25 @@ def test_rss_preserves_links_dates_and_truthful_content_kind():
     assert docs[1].published_at is None
 
 
+def test_rss_with_company_keeps_only_items_naming_the_stock():
+    xml = b'''<rss><channel>
+    <item><title>Why CrowdStrike Holdings Stock Crushed it on Friday</title><link>https://example.com/1</link></item>
+    <item><title>Chip stocks rally</title><link>https://example.com/2</link>
+    <description>Nvidia led the semiconductor index higher.</description></item>
+    <item><title>$NVDA options volume jumps</title><link>https://example.com/3</link></item>
+    <item><title>nvda lowercase is not the ticker</title><link>https://example.com/4</link></item>
+    </channel></rss>'''
+    docs = sources.parse_news_rss(xml, "NVDA", seen_at=NOW, company="NVIDIA")
+    assert [d.source_url for d in docs] == ["https://example.com/2", "https://example.com/3"]
+    assert len(sources.parse_news_rss(xml, "NVDA", seen_at=NOW)) == 4  # no company: unfiltered
+
+
+def test_one_letter_ticker_does_not_match_ordinary_words():
+    about = sources.mentions("F", "Ford Motor")
+    assert about.search("Ford Motor recalls trucks") and about.search("F shares slip")
+    assert not about.search("a look at f-strings") and not about.search("half of fords")
+
+
 def test_encoded_feed_body_is_still_marked_excerpt():
     xml = b'''<rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><item>
     <title>Results</title><link>https://example.com/results</link>

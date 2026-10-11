@@ -19,7 +19,7 @@ from sources import DocumentCollection, SourceDocument
 def repository(monkeypatch):
     state = SimpleNamespace(events=[], bars=[], fundamentals=[], documents=[], chunks=[],
                             passages=[], retrievals=[], predictions=[], evidence=[], loaded=None,
-                            datasets={}, votes={})
+                            datasets={}, votes={}, unsynced=[])
     class Repo:
         def __init__(self, connection): pass
         def save_price_bars(self, ticker, bars, **kwargs):
@@ -40,6 +40,11 @@ def repository(monkeypatch):
         def retrieve_passages(self, ticker, query, **kwargs):
             state.retrievals.append((ticker, query, kwargs))
             return state.passages
+        def chunks_to_sync(self, embedding_model, *, limit):
+            return state.unsynced[:limit]
+        def mark_chunks_synced(self, rows, embedding_model):
+            state.events.append(('synced', [r['chunk_id'] for r in rows]))
+            state.unsynced = state.unsynced[len(rows):]
         def passages_by_chunk_ids(self, ticker, chunk_ids, **kwargs):
             state.events.append('reloaded_from_postgres')
             return [p for p in state.passages if p['chunk_id'] in chunk_ids]
@@ -219,11 +224,17 @@ def test_retrieval_windows(repository):
 
 @pytest.fixture
 def snowflake(monkeypatch):
-    """RAG_BACKEND=snowflake with a fake index; `fail_connect` / `fail_search` simulate outages."""
-    state = SimpleNamespace(searches=[], fail_connect=False, fail_search=False, closed=False)
+    """RAG_BACKEND=snowflake with a fake index; `fail_connect` / `fail_search` / `fail_upsert`
+    simulate outages."""
+    state = SimpleNamespace(searches=[], upserts=[], fail_connect=False, fail_search=False,
+                            fail_upsert=False, closed=False)
     class Index:
         def __init__(self, connection, model):
             self.embed_model = model
+        def upsert(self, rows):
+            if state.fail_upsert:
+                raise service.SnowflakeError('Snowflake MERGE failed.')
+            state.upserts.append([r['chunk_id'] for r in rows])
         def search(self, ticker, query, **kwargs):
             if state.fail_search:
                 raise service.SnowflakeError('Snowflake query failed.')
@@ -277,6 +288,27 @@ def test_snowflake_outage_falls_back_to_keyword_search_with_one_warning(reposito
     _, warnings = service._retrieve('TEST', set(Strategy), cutoff)
     assert warnings == [service.SNOWFLAKE_FALLBACK]  # first failure switches off Snowflake
     assert len(repository.retrievals) == 9 and snowflake.closed
+
+
+def test_new_chunks_are_indexed_before_the_search(repository, snowflake):
+    repository.passages = [_evidence(11, 1, 0.3), _evidence(12, 2, 0.2)]
+    repository.unsynced = [{'chunk_id': 12, 'instrument_id': 1}]
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    _, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
+    assert warnings == [] and snowflake.upserts == [[12]]
+    assert repository.events.index(('synced', [12])) < repository.events.index('reloaded_from_postgres')
+    assert repository.unsynced == []
+
+
+def test_failed_index_sync_falls_back_to_keyword_search(repository, snowflake):
+    repository.passages = [_evidence(11, 1, 0.3)]
+    repository.unsynced = [{'chunk_id': 11, 'instrument_id': 1}]
+    snowflake.fail_upsert = True
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    passages, warnings = service._retrieve('TEST', {Strategy.DAY_TRADER}, cutoff)
+    assert warnings == [service.SNOWFLAKE_FALLBACK] and snowflake.searches == []
+    assert repository.unsynced  # not marked synced, so the next forecast retries
+    assert [p['chunk_id'] for p in passages[Strategy.DAY_TRADER]] == [11]
 
 
 def test_snowflake_warning_reaches_the_saved_prediction(repository, offline_sources, snowflake, fake_llm):

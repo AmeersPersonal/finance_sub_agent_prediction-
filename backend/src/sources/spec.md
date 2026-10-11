@@ -12,7 +12,10 @@ classification and metadata. Missing sources do not discard successful sources.
 - Yahoo Finance RSS: linked headlines and publisher-provided descriptions.
   Descriptions are **excerpts**, not full articles. Article links are saved as
   citations but are not followed or scraped. A news story is not representative
-  evidence of population-wide public opinion.
+  evidence of population-wide public opinion. The per-ticker feed mixes in
+  general market stories (for NVDA, about 3 in 19 items named Nvidia), so when
+  the company name is known only items naming the company or the ticker
+  (case-sensitive, so one-letter tickers don't match words) are kept.
 - Google News RSS (keyless): two searches per ticker, `"<TICKER>" stock` over
   7 days and `"<Company>" (launch OR unveil OR announces OR product OR rumor OR
   leak)` over 30 days. Items are **headlines** only (the description just

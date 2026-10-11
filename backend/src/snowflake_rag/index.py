@@ -6,8 +6,10 @@ answers one question: which chunk IDs are most similar to a query, among
 chunks that were available at the forecast cutoff. Callers reload the winning
 chunks from PostgreSQL, which re-applies every point-in-time rule.
 
-Embeddings are computed inside Snowflake (SNOWFLAKE.CORTEX.EMBED_TEXT_1024), so
-no vectors cross the network and no separate embedding key is needed. Search is
+Embeddings are computed inside Snowflake (AI_EMBED, which replaced the
+deprecated EMBED_TEXT_1024 and returns the same vectors), so no vectors cross
+the network and no separate embedding key is needed. The model must produce
+1024-dimension vectors to fit the table. Search is
 exact cosine similarity over the filtered rows, which is fast at this scale.
 """
 
@@ -48,8 +50,7 @@ MERGE = f"""MERGE INTO {TABLE} t USING (
     SELECT CHUNK_ID, DOCUMENT_ID, TICKER, EVIDENCE_ROLE,
            TO_TIMESTAMP_TZ(PUBLISHED_AT) AS PUBLISHED_AT,
            TO_TIMESTAMP_TZ(FIRST_SEEN_AT) AS FIRST_SEEN_AT, TITLE, CONTENT_TEXT,
-           SNOWFLAKE.CORTEX.EMBED_TEXT_{DIMENSIONS}(
-               %(model)s, COALESCE(TITLE || CHR(10), '') || CONTENT_TEXT) AS EMBEDDING
+           AI_EMBED(%(model)s, COALESCE(TITLE || CHR(10), '') || CONTENT_TEXT) AS EMBEDDING
     FROM {STAGE}
 ) s ON t.CHUNK_ID = s.CHUNK_ID AND t.TICKER = s.TICKER AND t.EMBEDDING_MODEL = %(model)s
 WHEN NOT MATCHED THEN INSERT
@@ -115,7 +116,7 @@ class VectorIndex:
             where.append("c.EVIDENCE_ROLE = %(role)s")
             params["role"] = role
         rows = self._run(
-            f"""WITH q AS (SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_{DIMENSIONS}(%(model)s, %(query)s) AS V)
+            f"""WITH q AS (SELECT AI_EMBED(%(model)s, %(query)s) AS V)
             SELECT c.CHUNK_ID, VECTOR_COSINE_SIMILARITY(c.EMBEDDING, q.V) AS SCORE
             FROM {TABLE} c CROSS JOIN q
             WHERE {' AND '.join(where)}

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_EMBED_MODEL = "snowflake-arctic-embed-l-v2.0"  # 1024 dimensions, for EMBED_TEXT_1024
+DEFAULT_EMBED_MODEL = "snowflake-arctic-embed-l-v2.0"  # 1024 dimensions, the RAG_CHUNKS vector size
 REQUIRED = ("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PRIVATE_KEY_FILE",
             "SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_DATABASE", "SNOWFLAKE_SCHEMA")
 _MODEL = re.compile(r"^[A-Za-z0-9._-]{1,100}$")

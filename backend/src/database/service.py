@@ -32,6 +32,7 @@ from snowflake_rag.connection import connect as snowflake_connect
 from snowflake_rag.connection import enabled as snowflake_enabled
 from snowflake_rag.index import VectorIndex
 from snowflake_rag.retrieval import hybrid_passages
+from snowflake_rag.sync import sync as sync_index
 from sources import fetch_documents
 
 
@@ -168,6 +169,9 @@ def mix_roles(candidates: dict[str, list[dict]], limit: int) -> list[dict]:
 
 
 SNOWFLAKE_FALLBACK = "Snowflake RAG unavailable; evidence came from PostgreSQL keyword search."
+# Chunks stored by this forecast's own refresh are indexed before it searches.
+# A larger backlog (first run, bulk import) is left to `python -m snowflake_rag sync`.
+SYNC_BATCHES_PER_FORECAST = 5
 
 
 @contextmanager
@@ -191,6 +195,12 @@ def _retrieve(ticker: str, strategies: set[Strategy], cutoff: datetime):
     passages, warnings = {}, []
     with connect() as connection, _vector_index(warnings) as index:
         repo = DatabaseRepository(connection)
+        if index is not None:
+            try:
+                sync_index(repo, index, max_batches=SYNC_BATCHES_PER_FORECAST)
+            except SnowflakeError:
+                warnings.append(SNOWFLAKE_FALLBACK)
+                index = None
         for strategy in strategies:
             candidates = {}
             for role in EVIDENCE_ROLES:

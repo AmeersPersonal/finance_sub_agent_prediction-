@@ -193,16 +193,30 @@ def classify(text: str, default_role: str | None = None) -> dict:
     return {"role": role, "method": method, "unconfirmed": bool(UNCONFIRMED_TERMS.search(text))}
 
 
+def mentions(ticker: str, company: str = ""):
+    """Pattern for text naming the stock: the ticker as written ($NVDA, NVDA) or the company.
+
+    The ticker is case-sensitive so one-letter tickers don't match ordinary words.
+    """
+    pattern = r"(?<![\w$])\$?" + re.escape(ticker.upper()) + r"\b"
+    if company:
+        pattern += r"|(?i:\b" + re.escape(company) + r"\b)"
+    return re.compile(pattern)
+
+
 def parse_news_rss(xml: bytes, ticker: str, limit: int = 10,
                    seen_at: datetime | None = None, *, provider: str = "yahoo_rss",
                    default_source: str = "Yahoo Finance RSS",
-                   role: str | None = None) -> list[SourceDocument]:
+                   role: str | None = None, company: str = "") -> list[SourceDocument]:
+    """Feed items as documents. With `company`, items naming neither it nor the
+    ticker are dropped: Yahoo's per-ticker feed mixes in general market stories."""
     if limit <= 0:
         return []
     # ElementTree does not fetch external entities; reject DTD input explicitly.
     if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
         raise ValueError("Provider feed cannot contain a DTD or entity declarations")
     seen_at = seen_at or datetime.now(timezone.utc)
+    about = mentions(ticker, company) if company else None
     root = ElementTree.fromstring(xml)
     documents = []
     seen_links = set()
@@ -222,6 +236,8 @@ def parse_news_rss(xml: bytes, ticker: str, limit: int = 10,
             summary = ""
         published = _parse_date(item.findtext("pubDate"))
         if published is not None and published > seen_at:
+            continue
+        if about is not None and not about.search(title + " " + summary):
             continue
         documents.append(SourceDocument(
             source_url=link, title=title, content_text=summary or title,
@@ -527,7 +543,7 @@ def fetch_documents(ticker: str, company_name: str = "") -> DocumentCollection:
     result = DocumentCollection()
     try:
         xml = _get(YAHOO_RSS.format(ticker=quote(ticker, safe="")))
-        result.documents.extend(parse_news_rss(xml, ticker))
+        result.documents.extend(parse_news_rss(xml, ticker, company=company_query_name(company_name)))
         if not result.documents:
             result.warnings.append("Yahoo feed returned no source-linked evidence")
     except Exception as exc:

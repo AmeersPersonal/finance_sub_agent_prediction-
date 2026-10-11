@@ -2,8 +2,9 @@
 
 ## TODOS
 
-- [ ] Run `python -m snowflake_rag setup` and `sync` against the team's Snowflake account; offline tests don't validate credentials, grants or Cortex availability in its region.
-- [ ] Schedule `python -m snowflake_rag sync` (cron, Task Scheduler or CI) so the index trails ingestion by minutes, not days.
+- [x] Run `python -m snowflake_rag setup` and `sync` against the team's Snowflake account (HACK_KNIGHT.RAG, Oct 2026).
+- [x] Keep the index current: every forecast syncs pending chunks (up to `SYNC_BATCHES_PER_FORECAST` batches) before it searches, so it sees the documents its own refresh just stored. Run `sync` by hand after bulk imports.
+- [x] Move from the deprecated `EMBED_TEXT_1024` to `AI_EMBED` (same vectors; no re-embed needed).
 - [ ] Compare retrieval quality with and without `RAG_BACKEND=snowflake` using `prediction_evidence.metadata->>'retrieval'` and `cited_by`, before treating vector search as an improvement.
 - [ ] If `RAG_CHUNKS` grows past a few million rows, cluster it by `TICKER` or move to a Cortex Search Service.
 
@@ -19,7 +20,7 @@ ranked copy of the chunks with Cortex embeddings and returns chunk IDs only.
 | File | Role |
 |---|---|
 | `connection.py` | `enabled()` (`RAG_BACKEND=snowflake`), `SnowflakeSettings.from_env()`, key-pair `connect()`, user-safe `SnowflakeError` |
-| `index.py` | `VectorIndex`: `setup()` creates `RAG_CHUNKS`, `upsert()` stages rows and MERGEs them with `EMBED_TEXT_1024`, `search()` ranks by `VECTOR_COSINE_SIMILARITY` with ticker/cutoff/window/role filters |
+| `index.py` | `VectorIndex`: `setup()` creates `RAG_CHUNKS`, `upsert()` stages rows and MERGEs them with `AI_EMBED`, `search()` ranks by `VECTOR_COSINE_SIMILARITY` with ticker/cutoff/window/role filters |
 | `retrieval.py` | `hybrid_passages()`: Snowflake hits reloaded from PostgreSQL, fused with keyword matches by reciprocal rank fusion (`fuse()`) |
 | `sync.py` | `sync()`: batch copy of chunk/ticker pairs not yet in `snowflake_synced_chunks` |
 | `__main__.py` | `python -m snowflake_rag setup | sync | search TICKER "query"` |
@@ -28,9 +29,11 @@ ranked copy of the chunks with Cortex embeddings and returns chunk IDs only.
 
 ```
 sources -> database.service -> PostgreSQL documents + document_chunks
-python -m snowflake_rag sync:  chunks_to_sync -> RAG_CHUNKS_STAGE -> MERGE + EMBED_TEXT_1024 -> RAG_CHUNKS
+python -m snowflake_rag sync:  chunks_to_sync -> RAG_CHUNKS_STAGE -> MERGE + AI_EMBED -> RAG_CHUNKS
                                -> mark_chunks_synced (PostgreSQL)
-database.service._retrieve (RAG_BACKEND=snowflake), per strategy and evidence role:
+database.service._retrieve (RAG_BACKEND=snowflake):
+  sync (up to 5 batches)      index the chunks this forecast's refresh just stored
+per strategy and evidence role:
   VectorIndex.search          top 4 x limit chunk IDs, pre-filtered by ticker, cutoff, window, role
   passages_by_chunk_ids       reload from PostgreSQL; superseded/late/other-role chunks dropped
   retrieve_passages(fill)     keyword matches, including chunks not synced yet
