@@ -5,23 +5,47 @@
    ========================================================================= */
 
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+/* Handwriting font, the same one used on the sign-in and sign-up monitor */
+@import url("https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap");
 
 /* ---------- Tokens ---------- */
 :root {
-  --bg: #f6f3ec;
+  /* Light mode palette, taken from the hand-drawn monitor scene:
+     pale screen-blue page, pencil-dark ink, slate blue (BACK button),
+     yellow buttons (CONFIRM), dark gray header (the wall). */
+  --bg: #e8f0f3;
   --panel: #ffffff;
-  --rule: #e4ded2;
-  --ink: #1a1a1a;
-  --ink-2: #5b5750;
+  --rule: #d4dde1;
+  --ink: #2e2f2b;
+  --ink-2: #575f64;
   --up: #0f7b6c;
   --down: #c2410c;
-  --accent: #3b4bc8;
+  --accent: #4f7286;
   --accent-ink: #ffffff;
-  --tint: #efeadf;
-  --band: rgba(59, 75, 200, 0.12);
-  --focus: #3b4bc8;
+  --tint: #e2e9ec;
+  --band: rgba(79, 114, 134, 0.16);
+  --focus: #4f7286;
 
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  /* Buttons: yellow like CONFIRM */
+  --btn-bg: #f4e48c;
+  --btn-ink: #2e2f2b;
+  --btn-border: #2e2f2b;
+  --btn-inv-bg: #f4e48c;
+  --btn-inv-ink: #2e2f2b;
+  --btn-inv-border: #f4e48c;
+
+  /* Header: dark gray like the wall behind the monitor */
+  --header-bg: #404040;
+  --header-ink: #ede3bd;
+  --header-ink-2: #c9c2a0;
+  --header-rule: #555555;
+  --header-panel: #4a4a4a;
+  --header-focus: #f4e48c;
+
+  /* Headings use the handwriting font. To use it for ALL text, also change
+     --font-body below to the same value. To go back, use:
+     "Fraunces", Georgia, "Times New Roman", serif */
+  --font-display: "Gochi Hand", "Comic Sans MS", cursive;
   --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
@@ -42,35 +66,63 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14161a;
-    --panel: #1c1f24;
-    --rule: #2c3036;
-    --ink: #edeae3;
-    --ink-2: #a8a39a;
+    /* Dark mode: the light palette with its hue turned ~10° clockwise
+       and saturation lowered slightly, darkened into a blue-slate night. */
+    --bg: #151a20;
+    --panel: #1d252d;
+    --rule: #343f4b;
+    --ink: #e5ebf0;
+    --ink-2: #aab9c5;
     --up: #3cc2ae;
     --down: #f97350;
-    --accent: #8b9bff;
-    --accent-ink: #14161a;
-    --tint: #181b20;
-    --band: rgba(139, 155, 255, 0.16);
-    --focus: #8b9bff;
+    --accent: #95a7bb;
+    --accent-ink: #151a20;
+    --tint: #222b34;
+    --band: rgba(149, 167, 187, 0.18);
+    --focus: #95a7bb;
+    --btn-bg: #eaeb8e;
+    --btn-ink: #151a20;
+    --btn-border: #eaeb8e;
+    --btn-inv-bg: #eaeb8e;
+    --btn-inv-ink: #151a20;
+    --btn-inv-border: #eaeb8e;
+    --header-bg: #0f1317;
+    --header-ink: #ebeac6;
+    --header-ink-2: #c0c09a;
+    --header-rule: #343f4b;
+    --header-panel: #1a2128;
+    --header-focus: #eaeb8e;
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #14161a;
-  --panel: #1c1f24;
-  --rule: #2c3036;
-  --ink: #edeae3;
-  --ink-2: #a8a39a;
+  /* Dark mode: the light palette with its hue turned ~10° clockwise
+     and saturation lowered slightly, darkened into a blue-slate night. */
+  --bg: #151a20;
+  --panel: #1d252d;
+  --rule: #343f4b;
+  --ink: #e5ebf0;
+  --ink-2: #aab9c5;
   --up: #3cc2ae;
   --down: #f97350;
-  --accent: #8b9bff;
-  --accent-ink: #14161a;
-  --tint: #181b20;
-  --band: rgba(139, 155, 255, 0.16);
-  --focus: #8b9bff;
+  --accent: #95a7bb;
+  --accent-ink: #151a20;
+  --tint: #222b34;
+  --band: rgba(149, 167, 187, 0.18);
+  --focus: #95a7bb;
+  --btn-bg: #eaeb8e;
+  --btn-ink: #151a20;
+  --btn-border: #eaeb8e;
+  --btn-inv-bg: #eaeb8e;
+  --btn-inv-ink: #151a20;
+  --btn-inv-border: #eaeb8e;
+  --header-bg: #0f1317;
+  --header-ink: #ebeac6;
+  --header-ink-2: #c0c09a;
+  --header-rule: #343f4b;
+  --header-panel: #1a2128;
+  --header-focus: #eaeb8e;
   color-scheme: dark;
 }
 
@@ -235,9 +287,9 @@ main:focus {
   min-height: 48px;
   padding: 0 var(--s3);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--ink);
-  background: var(--ink);
-  color: var(--bg);
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
@@ -268,9 +320,9 @@ main:focus {
 }
 
 .btn--invert {
-  background: var(--bg);
-  color: var(--ink);
-  border-color: var(--bg);
+  background: var(--btn-inv-bg);
+  color: var(--btn-inv-ink);
+  border-color: var(--btn-inv-border);
 }
 
 .btn--invert:hover {
@@ -330,11 +382,20 @@ main:focus {
 
 /* ---------- Header ---------- */
 .site-header {
+  /* Inside the header, the page colors are swapped for the header colors,
+     so the logo, links and theme button all switch automatically. */
+  --bg: var(--header-bg);
+  --ink: var(--header-ink);
+  --ink-2: var(--header-ink-2);
+  --rule: var(--header-rule);
+  --panel: var(--header-panel);
+  --focus: var(--header-focus);
   position: sticky;
   top: 0;
   z-index: 50;
   height: var(--header-h);
   background: var(--bg);
+  color: var(--ink);
   border-bottom: 1px solid var(--rule);
 }
 
@@ -1464,4 +1525,20 @@ main:focus {
     fill: GrayText;
     opacity: 0.3;
   }
+}
+
+/* ---------- Handwriting headings ----------
+   Gochi Hand only comes in one weight, so bold headings would be faked
+   (smeared) by the browser. These keep it at its natural weight and undo
+   the tight letter-spacing that was tuned for the old serif font. */
+h1,
+h2,
+h3,
+.hero__title,
+.brand__name,
+.learn__demo-title,
+.person__line {
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: 0.01em;
 }

@@ -72,8 +72,8 @@ export default function SignupMonitor() {
   return (
     <div className="signup-page">
       <header className="signup-header">
-        <Link to="/" className="logo">MyAPP</Link>
-        <p>Already have an account? <Link to="/signin">Sign in</Link></p>
+        <Link to="/" className="logo">Market Moves</Link>
+        <p> <Link to="/signin"> Already have an account? Sign in</Link></p>
       </header>
 
       {/* The drawing, with the labels, boxes and button placed on top of it */}
