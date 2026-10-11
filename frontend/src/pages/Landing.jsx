@@ -1,5 +1,5 @@
 /* =============================================================================
-   MONEY MOVES — LANDING PAGE
+   Market Moves — LANDING PAGE
    =============================================================================
 
    WHAT THIS FILE IS
@@ -64,7 +64,7 @@ import "../LandingPage.css";
    -------------------------------------------------------------------------- */
 
 // The product name. Change it here and it updates everywhere on the page.
-const BRAND = "Money Moves";
+const BRAND = "Market Moves";
 
 // All the main text on the page, grouped in one object.
 const COPY = {
@@ -84,14 +84,14 @@ const COPY = {
   heroKicker: "Financial literacy, in plain language",
   heroTitle: "The market isn't random. It just never explains itself.",
   heroBody:
-    "Money Moves puts the price line, the news behind it, and an honest estimate of what's next on one page — so you finally see why a stock went up or down, not just that it did.",
+    "Market Moves puts the price line, the news behind it, and an honest estimate of what's next on one page — so you finally see why a stock went up or down, not just that it did.",
   heroPrimary: "Get early access",
   heroSecondary: "See how it works",
   heroFootnote: "Free to start. Educational only — no trading, no brokerage logins.",
 
   // Legal-style notice shown in the footer. Have a lawyer review before launch.
   disclaimer:
-    "Money Moves is an educational tool. Nothing on this site is financial advice. Forecasts are computer-generated estimates, and prices can move outside any range shown.",
+    "Market Moves is an educational tool. Nothing on this site is financial advice. Forecasts are computer-generated estimates, and prices can move outside any range shown.",
 };
 
 /* ---------- Sample chart data ----------
@@ -1258,7 +1258,7 @@ function Honesty() {
 const FAQS = [
   {
     q: "Is this a trading app?",
-    a: "No. Money Moves is for understanding the market, not trading in it. There are no buy or sell buttons and no brokerage connections. When you're ready, we'll point you to a practice mode that uses pretend money.",
+    a: "No. Market Moves is for understanding the market, not trading in it. There are no buy or sell buttons and no brokerage connections. When you're ready, we'll point you to a practice mode that uses pretend money.",
   },
   {
     q: "Where do the forecasts come from?",

@@ -68,7 +68,7 @@ export default function SigninMonitor() {
     <div className="signin-page">
       <header className="signin-header">
         <Link to="/" className="logo">Market Moves</Link>
-        <p>New here? <Link to="/signup">Create an account</Link></p>
+        <p> <Link to="/signup"> New here? Create an account</Link></p>
       </header>
 
       <form ref={sceneRef} className="scene" onSubmit={handleSubmit} noValidate>
