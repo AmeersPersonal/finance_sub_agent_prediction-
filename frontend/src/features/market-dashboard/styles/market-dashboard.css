@@ -1,0 +1,85 @@
+/* Market Move Dashboard styles, scoped to the `.mmd` wrapper so nothing leaks to
+   other pages. Order matters: Tailwind theme, then a scoped reset and the
+   dashboard's own styles, then Tailwind utilities so utility classes can still
+   override them. Selectors use :where(.mmd) to keep their original specificity.
+   Tailwind's global preflight is deliberately not imported. */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import 'tailwindcss/theme.css' layer(theme);
+
+/* ---- Page frame (only while the dashboard is mounted) ---- */
+html:has(.mmd){font-size:16px;line-height:1.5;letter-spacing:normal;scroll-behavior:smooth;background:#F6F3EC;color-scheme:light}
+html:has(.mmd[data-theme=dark]){background:#14161A;color-scheme:dark}
+html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-inline:0}
+
+/* ---- Design tokens ---- */
+.mmd{color-scheme:light;--bg:#F6F3EC;--panel:#FFFFFF;--rule:#E4DED2;--ink:#1A1A1A;--ink2:#5B5750;--up:#0F7B6C;--down:#C2410C;--accent:#3B4BC8}
+.mmd[data-theme=dark]{color-scheme:dark;--bg:#14161A;--panel:#1C1F24;--rule:#2C3036;--ink:#EDEAE3;--ink2:#A8A39A;--up:#3CC2AE;--down:#F97350;--accent:#8B9BFF}
+
+/* ---- Scoped reset (the parts of Tailwind's preflight the dashboard relies on) ---- */
+:where(.mmd),:where(.mmd) *,:where(.mmd) ::before,:where(.mmd) ::after{box-sizing:border-box;border:0 solid var(--rule)}
+:where(.mmd) :is(h1,h2,h3,h4,h5,h6){font-size:inherit;font-weight:inherit;font-family:inherit;color:inherit;letter-spacing:inherit;line-height:inherit;margin:0}
+:where(.mmd) :is(p,ol,ul,menu,figure,blockquote,dl,dd,pre,hr){margin:0}
+:where(.mmd) :is(ol,ul,menu){list-style:none;padding:0}
+:where(.mmd) :is(b,strong){font-weight:bolder}
+:where(.mmd) :is(button,input,select,optgroup,textarea){font:inherit;color:inherit;letter-spacing:inherit;margin:0;padding:0}
+:where(.mmd) :is(button,select){text-transform:none}
+:where(.mmd) :is(button,[type=button],[type=reset],[type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}
+:where(.mmd) :is(img,svg,video,canvas,audio,iframe,embed,object){display:block;vertical-align:middle}
+:where(.mmd) table{text-indent:0;border-color:inherit;border-collapse:collapse}
+:where(.mmd) input::placeholder{opacity:1;color:var(--ink2)}
+:where(.mmd) [hidden]{display:none}
+
+/* ---- Base ---- */
+.mmd{min-height:100svh;margin:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',Arial,sans-serif;font-size:1rem;line-height:1.5;text-align:start;transition:background-color .2s ease,color .2s ease}
+:where(.mmd) button{cursor:pointer}
+:where(.mmd) button:disabled{opacity:.55;cursor:wait}
+:where(.mmd) a{color:var(--accent);text-decoration:inherit}
+:where(.mmd) :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+:where(.mmd) :is(.panel,.action,.menu,.tip){transition:background-color .2s ease,border-color .2s ease,color .2s ease}
+
+/* ---- Skip links ---- */
+:where(.mmd) .skip{position:absolute;left:12px;top:-100px;z-index:100;background:var(--panel);padding:10px}
+:where(.mmd) .skip:focus{top:8px}
+
+/* ---- Typography & color helpers ---- */
+:where(.mmd) .serif{font-family:Fraunces,Georgia,serif}
+:where(.mmd) .mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
+:where(.mmd) .muted{color:var(--ink2)}
+:where(.mmd) .accent{color:var(--accent)}
+:where(.mmd) .up{color:var(--up)}
+:where(.mmd) .down{color:var(--down)}
+:where(.mmd) .eyebrow{font-size:.73rem;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ink2)}
+:where(.mmd) .small{font-size:.82rem}
+:where(.mmd) .rule{border-color:var(--rule)}
+
+/* ---- Panels & controls ---- */
+:where(.mmd) .panel{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:24px;min-width:0}
+:where(.mmd) .panel h2{font-family:Fraunces,Georgia,serif;font-size:1.4rem;line-height:1.2;margin:0 0 16px}
+:where(.mmd) .action{border:1px solid var(--rule);border-radius:7px;background:var(--panel);color:var(--ink);padding:7px 11px;min-height:36px}
+:where(.mmd) .action:hover,:where(.mmd) .action[aria-selected=true]{border-color:var(--accent);color:var(--accent)}
+:where(.mmd) .primary{background:var(--accent);border-color:var(--accent);color:#fff}
+:where(.mmd[data-theme=dark]) .primary{color:#14161A}
+:where(.mmd) .tag{display:inline-block;border:1px solid var(--rule);border-radius:4px;padding:2px 6px;font-size:.7rem;white-space:nowrap}
+:where(.mmd) .line-row{border-top:1px solid var(--rule);padding:12px 0}
+:where(.mmd) .menu{position:absolute;right:0;top:calc(100% + 8px);z-index:25;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:8px;min-width:190px}
+:where(.mmd) .tip{position:absolute;z-index:15;top:100%;left:0;width:min(265px,80vw);background:var(--panel);border:1px solid var(--accent);padding:10px;border-radius:7px;color:var(--ink);box-shadow:0 6px 18px #0002}
+:where(.mmd) .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--up);margin-right:6px}
+:where(.mmd) .chart-highlight{border-color:var(--accent)!important}
+
+/* ---- Loading ---- */
+:where(.mmd) .skeleton{background:var(--rule);border-radius:5px;animation:mmd-pulse 1.5s ease-in-out infinite}
+@keyframes mmd-pulse{50%{opacity:.42}}
+
+/* ---- Chart, lists, text clamps ---- */
+:where(.mmd) .plot{width:100%;height:260px;display:block}
+:where(.mmd) .plot svg{width:100%;height:100%}
+:where(.mmd) .truncate-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(.mmd) .headline{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+:where(.mmd) .virtual-scroll{height:330px;overflow:auto;position:relative;scrollbar-gutter:stable}
+:where(.mmd) .forecast-label{border-top:1px solid var(--rule);padding-top:12px;font-size:.78rem;color:var(--ink2)}
+
+/* ---- Motion & responsive ---- */
+@media(prefers-reduced-motion:reduce){:where(.mmd),:where(.mmd) *,:where(.mmd) *::before,:where(.mmd) *::after{animation:none!important;scroll-behavior:auto!important;transition:none!important}html:has(.mmd){scroll-behavior:auto}}
+@media(max-width:700px){:where(.mmd) .panel{padding:16px}:where(.mmd) .plot{height:220px}:where(.mmd) .mobile-stack{flex-wrap:wrap}:where(.mmd) .virtual-scroll{height:290px}}
+
+@tailwind utilities;
