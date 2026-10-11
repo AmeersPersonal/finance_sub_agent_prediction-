@@ -4,6 +4,8 @@
    override them. Selectors use :where(.mmd) to keep their original specificity.
    Tailwind's global preflight is deliberately not imported. */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Handwriting font, the same one used on the sign-in, sign-up and landing pages */
+@import url('https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap');
 @import 'tailwindcss/theme.css' layer(theme);
 
 /* ---- Page frame (only while the dashboard is mounted) ---- */
@@ -12,6 +14,8 @@ html:has(.mmd[data-theme=dark]){background:#14161A;color-scheme:dark}
 html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-inline:0}
 
 /* ---- Design tokens ---- */
+/* --font-heading: the handwriting font used for headings. To go back, use: Fraunces,Georgia,serif */
+.mmd{--font-heading:'Gochi Hand','Comic Sans MS',cursive}
 .mmd{color-scheme:light;--bg:#F6F3EC;--panel:#FFFFFF;--rule:#E4DED2;--ink:#1A1A1A;--ink2:#5B5750;--up:#0F7B6C;--down:#C2410C;--accent:#3B4BC8}
 .mmd[data-theme=dark]{color-scheme:dark;--bg:#14161A;--panel:#1C1F24;--rule:#2C3036;--ink:#EDEAE3;--ink2:#A8A39A;--up:#3CC2AE;--down:#F97350;--accent:#8B9BFF}
 
@@ -42,7 +46,7 @@ html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-
 :where(.mmd) .skip:focus{top:8px}
 
 /* ---- Typography & color helpers ---- */
-:where(.mmd) .serif{font-family:Fraunces,Georgia,serif}
+:where(.mmd) .serif{font-family:var(--font-heading);font-synthesis:none;letter-spacing:.01em}
 :where(.mmd) .mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}
 :where(.mmd) .muted{color:var(--ink2)}
 :where(.mmd) .accent{color:var(--accent)}
@@ -54,7 +58,7 @@ html:has(.mmd) #root{width:auto;max-width:none;margin:0;text-align:start;border-
 
 /* ---- Panels & controls ---- */
 :where(.mmd) .panel{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:24px;min-width:0}
-:where(.mmd) .panel h2{font-family:Fraunces,Georgia,serif;font-size:1.4rem;line-height:1.2;margin:0 0 16px}
+:where(.mmd) .panel h2{font-family:var(--font-heading);font-synthesis:none;letter-spacing:.01em;font-size:1.4rem;line-height:1.2;margin:0 0 16px}
 :where(.mmd) .action{border:1px solid var(--rule);border-radius:7px;background:var(--panel);color:var(--ink);padding:7px 11px;min-height:36px}
 :where(.mmd) .action:hover,:where(.mmd) .action[aria-selected=true]{border-color:var(--accent);color:var(--accent)}
 :where(.mmd) .primary{background:var(--accent);border-color:var(--accent);color:#fff}
