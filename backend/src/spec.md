@@ -30,6 +30,7 @@ the same pipeline (the API always through `database.service`). Everything else i
 | `sources/` | Online evidence: Yahoo/Google News RSS, Hacker News, optional SEC filings and press releases (`sources/spec.md`) |
 | `oauth/` | Google OIDC sign-in routes and in-memory sessions (`oauth/spec.md`) |
 | `database/` | PostgreSQL (Tiger Data) migrations and prediction/source persistence (`database/spec.md`, `database/SETUP.md`) |
+| `paper/` | Simulated stock trading: virtual cash, long-only positions, order log; no real money (`paper/spec.md`) |
 | `snowflake_rag/` | Optional Snowflake vector index over stored chunks, fused with keyword retrieval; `python -m snowflake_rag` (`snowflake_rag/spec.md`) |
 | `tests/` | Offline test suite (`tests/spec.md`) |
 | `requirements.txt` | Direct dependencies, pinned (`==`) |
@@ -79,7 +80,8 @@ fetches actual closes, and saves outcomes without rerunning the LLM.
 `snowflake_rag/__main__ -> database` (the sync job only; `snowflake_rag` modules
 otherwise take a repository object and import nothing from `database/`),
 `main.py, api/ -> audit -> ai -> finance`, `ml -> ai, finance`,
-`api/ -> charts -> ai.schemas, finance`, and `api/ -> oauth`. `oauth/`
+`api/ -> charts -> ai.schemas, finance`, `api/ -> paper -> database.repository`
+(price reads only), and `api/ -> oauth`. `oauth/`
 imports `database.connection` only inside `store_from_env`, for the shared
 session store. `finance/` never imports `ai/`; `ai/` never imports `audit/`
 or `ml/`; nothing imports `ml/` until a model passes its gate; `oauth/`

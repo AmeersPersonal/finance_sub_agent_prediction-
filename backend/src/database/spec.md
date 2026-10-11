@@ -49,6 +49,7 @@ frontend. Account integration remains separate work.
 | `migrations/006_snowflake_sync.sql` | `snowflake_synced_chunks`: which chunk/instrument pairs the Snowflake index holds, per embedding model |
 | `migrations/007_oauth_sessions.sql` | Shared OAuth pending logins and sessions (hashed ids), for `OAUTH_SESSION_STORE=database` |
 | `migrations/008_price_bar_revisions.sql` | Append-only archive of every price-bar version a refresh overwrote or a delete removed |
+| `migrations/009_paper_trading.sql` | Simulated trading: `paper_accounts`, `paper_positions`, `paper_orders` (per account; no real money) |
 | `backup.py` | `python -m database.backup`: pg_dump to `backend/data/backups/`, prune by the retention schedule |
 | `roles.sql` | Least-privilege group and login roles; an administrator runs it with psql after migrations |
 | `SETUP.md` | Cloud connection, private environment configuration, and CLI commands |
@@ -73,6 +74,7 @@ frontend. Account integration remains separate work.
 | `user_preferences` | External account reference, adult age band, strategy, experience, and optional preferences; no credentials. Written only through `/me/preferences` |
 | `snowflake_synced_chunks` | Chunk, instrument and embedding model already copied to the optional Snowflake index |
 | `price_bar_revisions` | Superseded price-bar versions with when they were fetched and superseded (append-only) |
+| `paper_accounts`, `paper_positions`, `paper_orders` | Virtual cash, long-only holdings and the order log per account; orders may reference the forecast they came from. Mutable by design; written only through `/paper/*` |
 | `oauth_pending_logins`, `oauth_sessions` | Shared sign-in state for several API workers; SHA-256 hashes of state values and session ids |
 
 The migration runner records names and checksums in `schema_migrations`, skips

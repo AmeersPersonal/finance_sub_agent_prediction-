@@ -22,6 +22,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -44,6 +45,8 @@ from oauth.provider import OAuthSettings
 from oauth.routes import current_user, get_settings, get_store
 from oauth.routes import router as oauth_router
 from oauth.sessions import SessionStore
+from paper.ledger import OrderRejected, Side
+from paper.service import PaperTrading
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -430,3 +433,81 @@ async def save_preferences(body: PreferencesRequest, account: str = Depends(_acc
 async def delete_preferences(account: str = Depends(_account)):
     """Forget the signed-in user's preferences."""
     return {"deleted": await asyncio.to_thread(_read, "delete_user_preferences", account)}
+
+
+# --- Paper trading (simulated; no real money) -------------------------------------
+
+
+class PaperOrderRequest(BaseModel):
+    """A simulated market order. Give `shares` or, for a buy, `dollars`. The order fills
+    at the latest saved daily close. `idempotency_key` makes a retried request safe."""
+
+    ticker: str
+    side: Side
+    shares: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=6)
+    dollars: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    idempotency_key: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    prediction_id: str | None = Field(default=None, description="The forecast this order was placed from")
+
+    @field_validator("ticker")
+    @classmethod
+    def ticker_symbol(cls, value: str) -> str:
+        return normalize_ticker(value)
+
+    @field_validator("prediction_id")
+    @classmethod
+    def forecast_identifier(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                UUID(value)
+            except ValueError:
+                raise ValueError("Invalid prediction identifier.") from None
+        return value
+
+
+def paper_account(request: Request, store: SessionStore = Depends(get_store),
+                  settings: OAuthSettings = Depends(get_settings)) -> str:
+    """The signed-in user's paper account; with sign-in turned off for local development,
+    one account per client address."""
+    if sign_in_required():
+        return account_reference(current_user(request, store), settings)
+    return "local:" + (request.client.host if request.client else "unknown")
+
+
+def _paper_call(method: str, *args, **kwargs):
+    with connect() as connection:
+        return getattr(PaperTrading(connection), method)(*args, **kwargs)
+
+
+async def _paper(method: str, *args, **kwargs):
+    try:
+        return await asyncio.to_thread(_paper_call, method, *args, **kwargs)
+    except OrderRejected as exc:  # our own messages: no price, no cash, nothing to sell
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.get("/paper/account")
+async def paper_account_summary(account: str = Depends(paper_account)):
+    """Virtual cash, equity, P&L and every holding at its latest saved close."""
+    return await _paper("account", account)
+
+
+@app.get("/paper/orders")
+async def paper_orders(limit: Annotated[int, Query(ge=1, le=200)] = 50, account: str = Depends(paper_account)):
+    """Order history, newest first, with the forecast call each order came from."""
+    return {"orders": await _paper("orders", account, limit=limit)}
+
+
+@app.post("/paper/orders", status_code=201)
+async def paper_place_order(body: PaperOrderRequest, account: str = Depends(paper_account)):
+    """Buy or sell at the latest saved close. A repeated `idempotency_key` returns the
+    first result (`replayed: true`) instead of trading again."""
+    return await _paper("place_order", account, symbol=body.ticker, side=body.side,
+                        idempotency_key=body.idempotency_key, shares=body.shares,
+                        dollars=body.dollars, prediction_id=body.prediction_id)
+
+
+@app.post("/paper/reset")
+async def paper_reset(account: str = Depends(paper_account)):
+    """Back to the starting balance, no holdings and no history."""
+    return await _paper("reset", account)

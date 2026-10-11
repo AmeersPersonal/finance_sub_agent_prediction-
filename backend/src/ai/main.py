@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -17,6 +17,7 @@ from ai.live import LiveFeed, apply_live_quote
 from ai.llm import JsonLLM, build_llm
 from ai.modes import DEFAULT_MODE, ReasoningMode
 from ai.personas import Strategy, build_personas
+from ai.policy import CallPolicy, apply_policy
 from ai.schemas import Prediction
 from ai.rag_retrieval import Snippet
 from ai.sentiment import score_headlines
@@ -54,9 +55,13 @@ async def predict(
     live_feed: LiveFeed | None = None,
     documents_by_strategy: Mapping[Strategy, list[Snippet]] | None = None,
     regression_daily: pd.DataFrame | None = None,
+    policy: CallPolicy | None = None,
+    price_signal: Callable[[pd.DataFrame], dict | None] | None = None,
 ) -> Prediction:
     """`llm`, `snapshot` and `live_feed` are injectable so tests run without network or
-    API keys. With a `live_feed`, the snapshot's last price comes from its first tick."""
+    API keys. With a `live_feed`, the snapshot's last price comes from its first tick.
+    `policy` may withhold a weak call and adds P(right) (`ai/policy.py`);
+    `price_signal` logs model A's probabilities beside the call (`ml/price_signal.py`)."""
     personas = build_personas(strategies, age_bands)
     modes = tuple(modes or (DEFAULT_MODE,))
     llm = llm or build_llm()
@@ -104,8 +109,14 @@ async def predict(
     except ValueError as exc:
         risk = None
         warnings.append(f"risk: {exc}")
+    price_model = None
+    if price_signal is not None:
+        try:
+            price_model = price_signal(regression_daily if regression_daily is not None else snapshot.daily)
+        except Exception as exc:  # a logged side signal, never a reason to fail the prediction
+            warnings.append(f"price_model: {type(exc).__name__}: unavailable")
 
-    return Prediction(
+    prediction = Prediction(
         ticker=snapshot.ticker,
         horizon_days=horizon_days,
         direction=combined.direction,
@@ -133,6 +144,7 @@ async def predict(
             dataclasses.asdict(regression) if regression else None,
             sentiment,
         ),
+        price_model=price_model,
         generated_at=datetime.now(timezone.utc),
         model=llm.model,
         prompt_version=PROMPT_VERSION,
@@ -146,3 +158,4 @@ async def predict(
             "document_references": {s.value: [d.citation_id for d in snippets] for s, snippets in docs.items()},
         },
     )
+    return apply_policy(prediction, policy) if policy is not None else prediction

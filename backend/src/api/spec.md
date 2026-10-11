@@ -7,6 +7,7 @@
 - [x] Background forecasts: `POST /prediction-jobs` returns a job id at once; poll `GET /prediction-jobs/{job_id}`. `POST /predictions` still holds the request open.
 - [x] `GET /score` and `/score/charts` share a cached report (`API_SCORE_CACHE_SECONDS`, default 300); `?refresh=true` recomputes, and `POST /predictions/{id}/evaluate` clears it.
 - [x] Account preferences behind sign-in: `GET`, `PUT` and `DELETE /me/preferences`, keyed by the provider's subject id.
+- [x] Simulated trading behind sign-in: `GET /paper/account`, `GET`/`POST /paper/orders`, `POST /paper/reset` (`paper/`).
 - [ ] Rate limits, jobs and the score cache are per process (`state.py`), so the API runs as one worker. Move them to PostgreSQL before running several workers; sign-in sessions already can be (`OAUTH_SESSION_STORE=database`).
 
 ## Purpose
@@ -54,6 +55,16 @@ sign-in. No credentials go to the browser. Interactive route documentation:
 | `GET /score/charts` | `/score` as chart-ready series, plus rolling accuracy over time (same price fetch and append as `/score`) |
 | `GET /oauth/login`, `/oauth/callback`, `/oauth/me`, `POST /oauth/logout` | Google sign-in (code + PKCE), session cookie (`oauth/spec.md`) |
 | `GET`, `PUT`, `DELETE /me/preferences` | The signed-in user's age band, strategy, experience level and up to 4 KB of UI settings; always needs sign-in |
+| `GET /paper/account` | Simulated account: cash, equity, P&L and each holding at its latest saved close (`paper/spec.md`) |
+| `GET /paper/orders?limit=50` | Simulated order history, newest first, with the forecast call each order came from |
+| `POST /paper/orders` | Buy or sell at the latest saved close. Body: `ticker`, `side`, `shares` or `dollars` (buys), `idempotency_key`, optional `prediction_id`. 201; a repeated key returns the first order with `replayed: true` |
+| `POST /paper/reset` | Back to $100,000 virtual cash, no holdings, no history |
+
+Paper trading is simulated: no real money, brokerage or blockchain. The routes need
+sign-in like `/me/preferences`, except with `API_REQUIRE_SIGN_IN=false`, where each
+client address gets one account for local development. A rejected order (no saved
+price, a price older than `PAPER_MAX_PRICE_AGE_DAYS`, not enough cash, nothing to
+sell, a forecast for a different ticker) is a 422 with a readable `detail`.
 
 Prediction request (only `ticker` is required):
 

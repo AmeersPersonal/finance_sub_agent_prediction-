@@ -18,6 +18,7 @@ connect them. A table contains records, like rows in a spreadsheet.
 | `prediction_evidence` | Source excerpts linked to a forecast and optionally an individual output. |
 | `evaluations` | What actually happened later and whether an output's direction was correct. |
 | `user_preferences` | A user's selected strategy, age band, experience, and preferences. No account passwords. |
+| `paper_accounts`, `paper_positions`, `paper_orders` | Simulated trading: a virtual cash balance, the shares held, and every buy and sell. Not real money. |
 
 `schema_migrations` is an additional bookkeeping table recording which schema
 updates have already been applied, with checksums to detect changed migration files.

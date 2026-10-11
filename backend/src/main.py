@@ -7,6 +7,8 @@
     python main.py AAPL --weights long_term=2,day_trader=0.5
     python main.py AAPL --weights auto        # weights from the scored log
     python main.py AAPL --live --audit        # websocket price; risk, checks and news digest
+    python main.py AAPL --policy              # withhold weak calls, add P(right) (ai/policy.py)
+    python main.py AAPL --price-model         # also log model A's probabilities for the stacker
     python main.py AAPL --json
     python main.py --score                    # score logged predictions whose horizon passed
     python main.py SPY --backtest             # regression walk-forward only, no LLM
@@ -21,7 +23,7 @@ import logging
 import math
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from dotenv import load_dotenv
 
@@ -31,10 +33,14 @@ from ai.llm import JsonLLM, build_llm
 from ai.main import predict
 from ai.modes import resolve_modes
 from ai.personas import AGE_BANDS, Strategy
+from ai.policy import CallPolicy, load_policy
 from ai.schemas import Prediction
 from ai.tool import clean_daily, fetch_daily, fetch_snapshot
 from audit.analysis import audit_prediction
 from finance.linear_regression import FEATURE_FUNCTIONS, FEATURES, RegressionResult, run_regression
+
+if TYPE_CHECKING:
+    from ml.price_signal import PriceSignal  # ml pulls in scikit-learn and torch: import on demand
 
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
@@ -91,6 +97,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--audit", action="store_true",
         help="add a company overview, data checks, a risk checklist and a news digest "
         "(one extra LLM call)",
+    )
+    parser.add_argument(
+        "--policy", action="store_true",
+        help="apply data/call_policy.json (python -m ml coverage --save): withhold calls below "
+        "the fitted strength and add a calibrated P(right)",
+    )
+    parser.add_argument(
+        "--price-model", action="store_true",
+        help="log the saved model A's probabilities beside the call (python -m ml price --save); "
+        "never shown to the personas",
     )
     parser.add_argument("--json", action="store_true", help="print the full prediction as JSON")
     parser.add_argument("--score", action="store_true", help="score the prediction log")
@@ -204,8 +220,15 @@ def render(p: Prediction) -> str:
             f"{head} FLAT (within +/-{p.flat_band_pct:g}%)  strength {p.confidence:.2f}  "
             f"agreement {p.agreement:.0%}"
         )
+    elif p.withheld_call:
+        lines.append(
+            f"{head} UNCLEAR, a {p.withheld_call} call at strength {p.confidence:.2f} was withheld "
+            "as too weak (--policy)"
+        )
     else:
         lines.append(f"{head} UNCLEAR, personas split or lean only weakly (net {p.net_score:+.2f})")
+    if p.p_correct is not None:
+        lines.append(f"Calibrated chance this call is right: {p.p_correct:.0%} (from scored history)")
     lines.append(f"Flat band: +/-{p.flat_band_pct:g}% (scaled to this stock's volatility)")
     if p.next_earnings_date:
         where = "INSIDE the horizon" if p.earnings_within_horizon else "after the horizon"
@@ -233,6 +256,13 @@ def render(p: Prediction) -> str:
     lines += ["", "Baselines: " + "  ".join(f"{k}={v}" for k, v in p.baselines.items())]
     if p.linear_regression:
         lines += _regression_lines(p.linear_regression)
+    if p.price_model:
+        m = p.price_model
+        gate = {True: "passed its gate", False: "failed its gate"}.get(m.get("passes_gate"), "gate unknown")
+        lines.append(
+            f"  model A ({m['name']}, logged only, {gate}): up {m['p_up']:.0%}  "
+            f"flat {m['p_flat']:.0%}  down {m['p_down']:.0%}"
+        )
 
     lines += ["", "Personas:"]
     labels = [r.persona_id if r.mode == "default" else f"{r.persona_id}@{r.mode}" for r in p.personas]
@@ -352,6 +382,29 @@ def resolve_weights(
     return report.strategy_weights
 
 
+def load_extras(args: argparse.Namespace) -> tuple[CallPolicy | None, PriceSignal | None]:
+    """The call policy with --policy and model A's signal with --price-model, each
+    None (with a note) when nothing has been fitted or saved yet."""
+    policy = signal = None
+    if args.policy:
+        policy = load_policy()
+        if policy is None:
+            print("--policy: no call policy yet; run python -m ml coverage --save", file=sys.stderr)
+        else:
+            used = [f"abstain below {v:.2f} at {h}d" for h, v in sorted(policy.abstain.items())]
+            used += ["calibrated P(right)"] if policy.curve else []
+            print(f"--policy: {', '.join(used) or 'nothing passed its check, calls unchanged'}",
+                  file=sys.stderr)
+    if args.price_model:
+        from ml.price_signal import price_signal
+
+        signal = price_signal(args.horizon)
+        if signal is None:
+            print(f"--price-model: no saved {args.horizon}-day model A; run python -m ml price "
+                  f"--horizon {args.horizon} --save", file=sys.stderr)
+    return policy, signal
+
+
 async def _predict_all(
     args: argparse.Namespace,
     weights: dict[str, float] | Literal["auto"] | None,
@@ -367,6 +420,7 @@ async def _predict_all(
     except (RuntimeError, ValueError) as exc:  # unknown LIVE_FEED or missing FINNHUB_API_KEY
         print(f"error: {exc}", file=sys.stderr)
         return len(args.tickers)
+    policy, signal = load_extras(args)
     failures = 0
     for ticker in args.tickers:
         try:
@@ -383,6 +437,8 @@ async def _predict_all(
                     modes=args.mode_list,
                     live=args.live,
                     audit=args.audit,
+                    policy=policy,
+                    price_signal=signal,
                 )
             else:
                 snapshot = await asyncio.to_thread(fetch_snapshot, ticker)
@@ -396,6 +452,8 @@ async def _predict_all(
                     llm=llm,
                     snapshot=snapshot,
                     live_feed=feed,
+                    policy=policy,
+                    price_signal=signal,
                 )
                 if args.audit:
                     prediction.audit = await audit_prediction(prediction, snapshot, llm)

@@ -5,5 +5,6 @@
     "long_term": 0.95
   },
   "scored": 500,
-  "source": "replay"
+  "source": "replay",
+  "do_not_use": "Backdated replay: only prices were cut back, so fundamentals, news and analyst data leak the outcome, and the LLM may have seen the period. A pipeline check only. Use --weights auto on live scored forecasts instead."
 }

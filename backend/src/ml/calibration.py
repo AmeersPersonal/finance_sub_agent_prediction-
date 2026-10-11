@@ -10,20 +10,25 @@
 6. Ranking: on each day with enough tickers predicted, long the top fifth by
    the personas' net score and short the bottom fifth.
 
+Also the bias check behind step 4 of the accuracy plan: what the personas call
+against what happened, per horizon and per strategy, and whether votes that
+cite missing data do worse.
+
 "unclear" calls count as wrong with strength 0, as in `ai.evaluation.score`.
 """
 
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
 from ai.evaluation import Outcome
-from ml.walkforward import MIN_RANK_TICKERS, RANK_QUANTILE, schedule
+from ml.walkforward import GATE_MARGIN, MIN_RANK_TICKERS, RANK_QUANTILE, schedule
 
 INSIDERS = "long_term.insiders_last_6m."  # the packet's keys in Prediction.features
 MIN_CLUSTER_BUYS = 3
@@ -64,21 +69,28 @@ class CallRows:
 
 
 def _strategies_agree(prediction) -> bool:
-    sign = {"up": 1, "down": -1}.get(prediction.direction)
+    sign = {"up": 1, "down": -1}.get(raw_call(prediction))
     nets = list(prediction.by_strategy.values())
     return sign is not None and len(nets) >= 2 and all(n * sign > 0 for n in nets)
+
+
+def raw_call(prediction) -> str:
+    """The personas' own call: a call the policy withheld counts as made, so
+    refitting the policy sees what it would have abstained from."""
+    return prediction.withheld_call or prediction.direction
 
 
 def call_rows(outcomes: Sequence[Outcome]) -> CallRows:
     outcomes = sorted(outcomes, key=lambda o: o.prediction.data_as_of)
     clusters = [insider_buying_cluster(o.prediction) for o in outcomes]
+    calls = [raw_call(o.prediction) for o in outcomes]
     return CallRows(
         insider_cluster=np.array([bool(c) for c in clusters], dtype=bool),
         insider_known=np.array([c is not None for c in clusters], dtype=bool),
         strength=np.array(
-            [0.0 if o.prediction.direction == "unclear" else o.prediction.confidence for o in outcomes]
+            [0.0 if c == "unclear" else o.prediction.confidence for c, o in zip(calls, outcomes)]
         ),
-        correct=np.array([o.prediction.direction == o.actual for o in outcomes], dtype=bool),
+        correct=np.array([c == o.actual for c, o in zip(calls, outcomes)], dtype=bool),
         up=np.array([o.actual == "up" for o in outcomes], dtype=bool),
         earnings=np.array([bool(o.prediction.earnings_within_horizon) for o in outcomes], dtype=bool),
         agree=np.array([_strategies_agree(o.prediction) for o in outcomes], dtype=bool),
@@ -240,3 +252,160 @@ def evaluate_calibration(
         fitted = StrengthCalibrator(method).fit(rows.strength, rows.correct)
         curve[method] = list(zip(CURVE_POINTS, fitted.predict(points).tolist()))
     return CalibrationScore(n_test=len(test), brier=brier, curve=curve)
+
+
+# --- the call policy (ai/policy.py) -----------------------------------------------
+
+POLICY_COVERAGE = 0.5  # keep the strongest half of calls
+MIN_POLICY_ROWS = 100  # per horizon, before an abstain threshold is even tried
+MIN_POLICY_TEST = 30  # kept calls in the held-out part
+CURVE_GRID = tuple(round(x, 2) for x in np.linspace(0, 1, 21))
+
+
+def _abstain_rule(rows: CallRows, test_fraction: float) -> dict:
+    """A strength threshold keeping `POLICY_COVERAGE` of calls, judged once out of
+    sample: fit on the earlier calls whose outcome was known before the held-out
+    ones begin, then compared with always-up on the held-out calls it keeps."""
+    n = len(rows.correct)
+    if n < MIN_POLICY_ROWS:
+        return {"enabled": False, "n": n, "reason": f"{n} scored calls, need {MIN_POLICY_ROWS}"}
+    cut = int(n * (1 - test_fraction))
+    start = rows.dates[cut]
+    train = np.flatnonzero((np.arange(n) < cut) & (rows.known_on <= start))
+    called = rows.strength > 0
+    train_calls = rows.strength[train][called[train]]
+    rule = {"n": n, "test_start": str(start), "enabled": False}
+    if not len(train_calls):
+        return rule | {"reason": "no calls before the held-out block"}
+    threshold = float(np.quantile(train_calls, 1 - POLICY_COVERAGE))
+    kept = np.flatnonzero((np.arange(n) >= cut) & called & (rows.strength >= threshold))
+    accuracy = float(rows.correct[kept].mean()) if len(kept) else None
+    always_up = float(rows.up[kept].mean()) if len(kept) else None
+    rule |= {"held_out_kept": len(kept), "held_out_accuracy": accuracy, "held_out_always_up": always_up}
+    if len(kept) < MIN_POLICY_TEST:
+        return rule | {"reason": f"{len(kept)} held-out calls kept, need {MIN_POLICY_TEST}"}
+    if accuracy - always_up <= GATE_MARGIN:
+        return rule | {"reason": f"kept calls don't beat always-up by {GATE_MARGIN * 100:g} points"}
+    final = float(np.quantile(rows.strength[called], 1 - POLICY_COVERAGE))  # refit on every call
+    return rule | {"enabled": True, "min_strength": round(final, 4)}
+
+
+def fit_call_policy(outcomes: Sequence[Outcome], test_fraction: float = 0.3) -> dict:
+    """The JSON `ai.policy.load_policy` reads. Each part is enabled only when it
+    passed its held-out check; a disabled part keeps its numbers and the reason."""
+    by_horizon: dict[int, list[Outcome]] = defaultdict(list)
+    for o in outcomes:
+        by_horizon[o.prediction.horizon_days].append(o)
+    abstain = {
+        str(h): _abstain_rule(call_rows(rows), test_fraction) for h, rows in sorted(by_horizon.items())
+    }
+    score = evaluate_calibration(outcomes)
+    if score is None:
+        calibration: dict = {"enabled": False, "reason": "too few resolved calls"}
+    else:
+        best = min(METHODS, key=score.brier.get)
+        calibration = {"method": best, "brier": score.brier, "n_test": score.n_test,
+                       "enabled": score.brier[best] < score.brier["constant"]}
+        if calibration["enabled"]:
+            rows = call_rows(outcomes)
+            fitted = StrengthCalibrator(best).fit(rows.strength, rows.correct)
+            probabilities = fitted.predict(np.array(CURVE_GRID))
+            calibration["curve"] = [[s, round(float(p), 4)] for s, p in zip(CURVE_GRID, probabilities)]
+        else:
+            calibration["reason"] = "no better than the constant hit rate on held-out calls"
+    return {
+        "scored": len(outcomes),
+        "data_through": max((o.prediction.data_as_of for o in outcomes), default=None),
+        "abstain": abstain,
+        "calibration": calibration,
+    }
+
+
+# --- bias: what the personas call against what happened ---------------------------
+
+ACTUALS = ("down", "flat", "up")
+CALLS = ("up", "down", "flat", "unclear")
+# A rationale that blames absent inputs. Matched loosely: it's a diagnostic, not a label.
+MISSING_DATA = re.compile(
+    r"\b(missing|unavailable|not available|lack of|no data|absence of|null)\b", re.IGNORECASE
+)
+
+
+@dataclass(frozen=True)
+class VoteBias:
+    votes: int
+    share: dict[str, float]  # direction -> share of this strategy's votes
+    hit_rate: dict[str, float | None]  # direction -> share of those votes that were right
+
+
+@dataclass(frozen=True)
+class BiasReport:
+    horizon_days: int
+    n: int
+    confusion: dict[str, dict[str, int]]  # call -> actual -> count
+    actual_share: dict[str, float]
+    call_share: dict[str, float]
+    by_strategy: dict[str, VoteBias]
+    missing_data_share: float | None  # share of persona votes whose rationale cites missing data
+    missing_data_hit_rate: float | None
+    other_hit_rate: float | None
+
+
+def _share(counts: Counter, keys: Sequence[str]) -> dict[str, float]:
+    total = sum(counts[k] for k in keys)
+    return {k: counts[k] / total if total else 0.0 for k in keys}
+
+
+def _rate(hits: int, n: int) -> float | None:
+    return hits / n if n else None
+
+
+def _horizon_bias(horizon: int, outcomes: Sequence[Outcome]) -> BiasReport:
+    confusion = {c: {a: 0 for a in ACTUALS} for c in CALLS}
+    for o in outcomes:
+        confusion[raw_call(o.prediction)][o.actual] += 1
+
+    votes: dict[str, Counter] = defaultdict(Counter)
+    hits: dict[str, Counter] = defaultdict(Counter)
+    flagged = [0, 0]  # votes, hits
+    other = [0, 0]
+    for o in outcomes:
+        for r in o.prediction.personas:
+            if r.view is None:
+                continue
+            right = r.view.direction == o.actual
+            votes[r.strategy][r.view.direction] += 1
+            hits[r.strategy][r.view.direction] += right
+            bucket = flagged if MISSING_DATA.search(r.view.rationale or "") else other
+            bucket[0] += 1
+            bucket[1] += right
+
+    by_strategy = {
+        s: VoteBias(
+            votes=sum(c.values()),
+            share=_share(c, ACTUALS),
+            hit_rate={d: _rate(hits[s][d], c[d]) for d in ACTUALS},
+        )
+        for s, c in sorted(votes.items())
+    }
+    total_votes = flagged[0] + other[0]
+    return BiasReport(
+        horizon_days=horizon,
+        n=len(outcomes),
+        confusion=confusion,
+        actual_share=_share(Counter(o.actual for o in outcomes), ACTUALS),
+        call_share=_share(Counter(raw_call(o.prediction) for o in outcomes), CALLS),
+        by_strategy=by_strategy,
+        missing_data_share=_rate(flagged[0], total_votes),
+        missing_data_hit_rate=_rate(flagged[1], flagged[0]),
+        other_hit_rate=_rate(other[1], other[0]),
+    )
+
+
+def bias_report(outcomes: Sequence[Outcome]) -> list[BiasReport]:
+    """One report per horizon, shortest first. Persona votes are counted per
+    persona-mode sample, so a run with several modes counts each of them."""
+    by_horizon: dict[int, list[Outcome]] = defaultdict(list)
+    for o in outcomes:
+        by_horizon[o.prediction.horizon_days].append(o)
+    return [_horizon_bias(h, rows) for h, rows in sorted(by_horizon.items())]

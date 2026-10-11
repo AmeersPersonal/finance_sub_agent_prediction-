@@ -69,6 +69,7 @@ backend/
     │   ├── modes.py          # reasoning modes: model + temperature presets
     │   ├── llm.py            # Gemini + an OpenAI-compatible second provider; build_llm (only file that talks to providers)
     │   ├── confidence_score.py  # strategy-balanced vote -> up/down/flat/unclear + strength
+    │   ├── policy.py         # call policy (--policy): withhold weak calls, calibrated P(right)
     │   ├── evaluation.py     # baselines, prediction log, split-aware scorer, derived weights
     │   ├── rag_retrieval.py  # keyword retrieval over ai/docs/ (.md/.txt)
     │   ├── features.py       # flattens the packets into Prediction.features (stacker training rows)
@@ -100,12 +101,15 @@ backend/
     │   ├── dataset.py        # rows labelled like the scorer: price rows (model A), scored personas (B)
     │   ├── model.py          # logistic, LightGBM, PyTorch MLP (CUDA if present), one interface
     │   ├── walkforward.py    # purged expanding-window evaluation, baselines, metrics, gates
-    │   ├── calibration.py    # accuracy at coverage, strength -> probability, earnings split
+    │   ├── calibration.py    # accuracy at coverage, strength -> probability, call policy, bias check
+    │   ├── price_signal.py   # saved model A as a function of daily bars (--price-model, logged only)
+    │   ├── replay.py         # backdated forecasts, prices only, scored on what followed (python -m ml replay)
     │   └── store.py          # save/load under data/models/ with a sidecar JSON
     ├── sources/              # Yahoo/Google News RSS, Hacker News, optional SEC filings + press releases
     ├── snowflake_rag/        # optional Snowflake vector index over stored chunks (RAG_BACKEND=snowflake)
     ├── database/             # migrations, repository, orchestration, backup.py, roles.sql, setup/docs
     ├── oauth/                # Google OIDC sign-in (code + PKCE); sessions in memory or PostgreSQL
+    ├── paper/                # simulated trading (no real money): Decimal ledger + PostgreSQL service behind /paper/*
     └── tests/                # offline: synthetic snapshot + fake LLM, fake OAuth provider
 ```
 
@@ -131,12 +135,15 @@ python main.py AAPL --modes temps                     # each persona at 3 temper
 python main.py AAPL --modes models                    # default + GEMINI_MODEL_STRONG
 python main.py AAPL --weights long_term=2,day_trader=0.5   # or --weights auto (from --score)
 python main.py AAPL --live --audit                    # websocket price; checks, risk, news digest
+python main.py AAPL --policy --price-model            # fitted call policy; log model A for the stacker
 python main.py AAPL --json --no-log
 python main.py --score                                # accuracy vs baselines, once horizons pass
 python main.py SPY --backtest [--features a,b,c]      # regression walk-forward only, no LLM
 python -m ml price [--target relative]                # model A walk-forward + gate (ml/spec.md)
 python -m ml stacker                                  # model B; needs ~300 scored predictions
-python -m ml coverage                                 # accuracy at coverage, strength calibration
+python -m ml coverage [--save]                        # accuracy at coverage, calibration; --save fits data/call_policy.json
+python -m ml bias                                     # persona calls and votes vs outcomes
+python -m ml replay [--dry-run]                       # backdated estimate of accuracy; spends Gemini quota
 uvicorn api.main:app --reload                         # HTTP API (database-backed), docs at /docs
 python -m database.backup                             # pg_dump + retention schedule (database/docs/retention-and-access.md)
 pytest                                                # offline

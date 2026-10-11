@@ -63,6 +63,16 @@ def test_flat_band_scales_with_volatility_and_horizon(snapshot):
     assert ind.flat_band(calmer, 1) == pytest.approx(one_day / 2)
 
 
+def test_outcome_base_rates_count_only_finished_windows():
+    rising = series([100 * 1.01 ** k for k in range(300)])
+    rates = ind.outcome_base_rates(rising, 5)
+    assert rates["up"] == 1.0 and rates["flat"] == rates["down"] == 0.0
+    assert rates["windows"] == 300 - 21 - 5  # the band needs 21 returns; the last 5 are unknown
+    assert ind.outcome_base_rates(rising, 5, lookback=50)["windows"] == 50
+    with pytest.raises(ValueError):
+        ind.outcome_base_rates(series([100, 101, 102]), 5)
+
+
 def test_flat_band_needs_some_history():
     with pytest.raises(ValueError):
         ind.flat_band(series([100, 101, 102]), 5)

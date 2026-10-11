@@ -25,6 +25,16 @@ def _json(value: Any) -> Any:
     return Jsonb(value)
 
 
+def same_forecast(stored: dict, prediction: Prediction) -> bool:
+    """The stored payload is this prediction. A field added to Prediction after the
+    forecast was saved loads as None and is missing from the stored payload."""
+    current = prediction.model_dump(mode="json")
+    for key in current.keys() - stored.keys():
+        if current.pop(key) is not None:
+            return False
+    return current == stored
+
+
 def persona_output_key(persona) -> str:
     """One row per persona per reasoning mode. The default mode keeps the
     pre-modes key, so rows saved before modes existed keep their meaning."""
@@ -174,7 +184,7 @@ class DatabaseRepository:
                 ).fetchone()
                 if stored is None:
                     raise DatabaseError("Save the prediction before its evaluation.")
-                if stored["prediction_payload"] != p.model_dump(mode="json"):
+                if not same_forecast(stored["prediction_payload"], p):
                     raise DatabaseError("Evaluation prediction differs from the stored forecast.")
                 price = getattr(outcome, "actual_price", None)
                 derived = price is None

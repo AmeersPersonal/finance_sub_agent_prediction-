@@ -76,7 +76,7 @@ features/market-dashboard/
 
 - The forecast disclaimer in `ForecastPanel.jsx` is draft copy and needs legal review.
 - Hide `DevStateControls` behind an environment flag.
-- The watchlist links to `/paper-trading`, which has no route yet; add one in `App.jsx`.
+- The watchlist links to `/paper-trading`, the simulated-trading page in `features/paper-trading/`. It uses the real backend (`/paper/*`), not the mock data here.
 - `App.jsx` renders a "Testing" line under every page, including this one.
 - Run the manual screen-reader audit listed in the on-page accessibility notes
   (NVDA, JAWS, VoiceOver).

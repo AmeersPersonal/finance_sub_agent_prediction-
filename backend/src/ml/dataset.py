@@ -148,6 +148,16 @@ def _nan(value: float | bool | None) -> float:
     return float("nan") if value is None else float(value)
 
 
+def _price_model_edge(prediction) -> float:
+    """Model A's P(up) - P(down) as logged (`ml/price_signal.py`). NaN unless the
+    forecast came after the model's last training label: otherwise the model has
+    seen this outcome."""
+    m = prediction.price_model
+    if not m or prediction.data_as_of <= str(m.get("trained_through")):
+        return float("nan")
+    return m["p_up"] - m["p_down"]
+
+
 def stacker_features(outcome: Outcome, include_packet: bool = False) -> dict[str, float]:
     """What model B learns from: every persona's vote, each strategy's and reasoning
     mode's net score, and the aggregate call. A persona that didn't run scores 0 (no
@@ -173,6 +183,8 @@ def stacker_features(outcome: Outcome, include_packet: bool = False) -> dict[str
         "horizon_days": float(p.horizon_days),
         "flat_band_pct": p.flat_band_pct,
         "earnings_within_horizon": _nan(p.earnings_within_horizon),
+        "regression.predicted_return_pct": _nan((p.linear_regression or {}).get("predicted_return_pct")),
+        "price_model.edge": _price_model_edge(p),
     }
     if include_packet and p.features:
         row |= {f"packet.{k}": _nan(v) for k, v in p.features.items()}

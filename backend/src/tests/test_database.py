@@ -28,6 +28,7 @@ CORE_MIGRATIONS = [
     "006_snowflake_sync.sql",
     "007_oauth_sessions.sql",
     "008_price_bar_revisions.sql",
+    "009_paper_trading.sql",
 ]
 
 
@@ -586,3 +587,89 @@ def test_price_corrections_are_archived_and_replayable(db):
     # Deleting a bar archives it too, so history before the deletion still has it.
     db.execute("DELETE FROM price_bars WHERE close = 120")
     assert len(load_daily_prices_as_known(repo, "TEST", as_of=corrected_at + timedelta(hours=1))) == 21
+
+
+def _save_closes(db, symbol: str, close: float, at: datetime) -> None:
+    DatabaseRepository(db).save_price_bars(
+        symbol, [{"bar_at": at, "close": close, "volume": 1000, "fetched_at": at}],
+        interval="1d", adjustment_basis="total_return")
+
+
+def test_paper_trading_round_trip(db):
+    from decimal import Decimal as D
+    from paper.ledger import OrderRejected
+    from paper.service import PaperTrading
+
+    now = datetime(2026, 10, 9, 21, tzinfo=timezone.utc)
+    _save_closes(db, "TEST", 100.0, now)
+    paper = PaperTrading(db, now=now + timedelta(hours=1))
+    account = "idp.example:user-1"
+
+    assert paper.account(account)["account"]["cash"] == D("100000.00")  # created on first read
+    bought = paper.place_order(account, symbol="TEST", side="buy", shares=D("10"), idempotency_key="key-buy-0001")
+    assert bought["order"]["total"] == D("1000.00") and not bought["replayed"]
+    assert bought["account"]["cash"] == D("99000.00")
+    assert [(p["symbol"], p["shares"]) for p in bought["positions"]] == [("TEST", D("10"))]
+
+    again = paper.place_order(account, symbol="TEST", side="buy", shares=D("10"), idempotency_key="key-buy-0001")
+    assert again["replayed"] and again["order"]["id"] == bought["order"]["id"]
+    assert again["account"]["cash"] == D("99000.00")  # not charged twice
+    with pytest.raises(OrderRejected, match="different order"):
+        paper.place_order(account, symbol="TEST", side="sell", shares=D("1"), idempotency_key="key-buy-0001")
+
+    _save_closes(db, "TEST", 110.0, now + timedelta(days=1))
+    paper = PaperTrading(db, now=now + timedelta(days=1, hours=1))
+    held = paper.account(account)
+    assert held["account"]["unrealized_pnl"] == D("100.00")
+    assert held["positions"][0]["unrealized_pnl_pct"] == D("10.00")
+
+    sold = paper.place_order(account, symbol="TEST", side="sell", shares=D("4"), idempotency_key="key-sell-0001")
+    assert sold["order"]["realized_pnl"] == D("40.00")
+    assert sold["account"]["cash"] == D("99440.00")
+    assert sold["positions"][0]["shares"] == D("6")
+
+    with pytest.raises(OrderRejected, match="tried to sell"):
+        paper.place_order(account, symbol="TEST", side="sell", shares=D("7"), idempotency_key="key-sell-0002")
+    with pytest.raises(OrderRejected, match="Not enough cash"):
+        paper.place_order(account, symbol="TEST", side="buy", shares=D("5000"), idempotency_key="key-buy-0002")
+    assert paper.account(account)["account"]["cash"] == D("99440.00")  # rejected orders change nothing
+    assert [o["side"] for o in paper.orders(account)] == ["sell", "buy"]
+
+    paper.place_order(account, symbol="TEST", side="sell", shares=D("6"), idempotency_key="key-sell-0003")
+    assert paper.account(account)["positions"] == []  # fully sold
+    reset = paper.reset(account)
+    assert reset["account"]["cash"] == D("100000.00") and paper.orders(account) == []
+
+
+def test_paper_trading_guards_prices_and_forecast_links(db, snapshot, fake_llm):
+    from decimal import Decimal as D
+    from paper.ledger import OrderRejected
+    from paper.service import PaperTrading
+
+    now = datetime(2026, 10, 9, 21, tzinfo=timezone.utc)
+    paper = PaperTrading(db, now=now)
+    account = "idp.example:user-2"
+    with pytest.raises(OrderRejected, match="no saved prices"):
+        paper.place_order(account, symbol="NONE", side="buy", dollars=D("100"), idempotency_key="key-none-0001")
+
+    _save_closes(db, "OLD", 50.0, now - timedelta(days=30))
+    with pytest.raises(OrderRejected, match="too old"):
+        paper.place_order(account, symbol="OLD", side="buy", dollars=D("100"), idempotency_key="key-old-00001")
+
+    _save_closes(db, "TEST", 100.0, now)
+    _save_closes(db, "OTHR", 20.0, now)
+    prediction = asyncio.run(predict("TEST", snapshot=snapshot, llm=fake_llm))
+    DatabaseRepository(db).save_prediction(prediction)
+    with pytest.raises(OrderRejected, match="not OTHR"):
+        paper.place_order(account, symbol="OTHR", side="buy", dollars=D("100"),
+                          idempotency_key="key-link-0001", prediction_id=prediction.id)
+    with pytest.raises(OrderRejected, match="doesn't exist"):
+        paper.place_order(account, symbol="TEST", side="buy", dollars=D("100"),
+                          idempotency_key="key-link-0002", prediction_id=uuid4().hex)
+
+    placed = paper.place_order(account, symbol="TEST", side="buy", dollars=D("250"),
+                               idempotency_key="key-link-0003", prediction_id=prediction.id)
+    assert placed["order"]["shares"] == D("2.5")
+    order = paper.orders(account)[0]
+    assert order["prediction_id"] == prediction.id
+    assert order["forecast_direction"] == prediction.direction

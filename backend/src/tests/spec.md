@@ -28,7 +28,9 @@ database. API tests use an in-process client with mocked services.
 | `test_personas.py`, `test_confidence_score.py` | eligibility and aggregation |
 | `test_evaluation.py` | baselines, log, scorer (NYSE calendar, splits, pending reasons), derived strategy weights |
 | `test_features.py` | feature flattening, `Prediction.features` logged, old log lines still load |
-| `test_ml.py` | `ml/`: labels match the scorer, no future data in features or training, metrics, the three models (MLP on CPU), store round trip, model B and `--weights auto` replay, coverage and calibration, `python -m ml` with fetches stubbed |
+| `test_ml.py` | `ml/`: labels match the scorer, no future data in features or training, metrics, the three models (MLP on CPU), store round trip, model B and `--weights auto` replay, coverage and calibration, the bias report, call-policy fitting (on and off), model A's logged signal and its leak guard, `python -m ml` with fetches stubbed |
+| `test_replay.py` | `ml/replay.py`: forecast dates, the as-of view (a later split restated, nothing after the date), the blinded snapshot, resume and abort, a replayed forecast scored through a split, date-clustered intervals, `python -m ml replay` dry run and report |
+| `test_policy.py` | `ai/policy.py`: only passed rules apply, a weak call is withheld with its numbers kept, `p_correct`, other horizons untouched; model A's signal logged and never in prompts; `same_forecast` accepts payloads saved before new fields; `main.py --policy` / `--price-model` |
 | `test_llm.py` | `GeminiLLM` retries, backoff and give-up, against a fake genai client; the OpenAI-compatible provider and routing; modes from the environment |
 | `test_live.py` | websocket live quote: first tick, timeout, dropped connection, fallback; Finnhub's quote; `LIVE_FEED` |
 | `test_cli.py` | `main.py`: argument errors, `--weights`, `--backtest`, rendering, predict + log |
@@ -36,6 +38,7 @@ database. API tests use an in-process client with mocked services.
 | `test_api_access.py` | Sign-in on forecasts, per-user rate limits, background prediction jobs, the score cache, `/me/preferences` |
 | `test_backup.py` | `database.backup`: retention schedule, pruning, credentials kept out of pg_dump's arguments |
 | `test_charts.py` | `charts/` builders (alignment, JSON-safe nulls, thin data, 5m VWAP and volume profile, equity curve matching `run_regression`, accuracy over time) and the `/charts` routes |
+| `test_paper.py` | Paper-trading arithmetic (buy, average cost, sell, P&L, rejections) and `/paper/*` routes with a faked service; the PostgreSQL round trip is in `test_database.py` |
 | `test_oauth.py` | OAuth routes with a fake provider: state/CSRF, PKCE, replay, expiry, sessions |
 | `test_audit.py` | company overview, data checks, risk checklist, news digest |
 | `test_sentiment.py`, `test_feeds.py`, `test_rag_retrieval.py`, `test_tool.py` | ai helpers, news items, cache pruning, `clean_daily` |
